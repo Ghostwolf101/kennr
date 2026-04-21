@@ -18,6 +18,7 @@ import ScreenshotTab from "@/components/tabs/ScreenshotTab";
 import ExtractionCard from "@/components/ExtractionCard";
 import ProjectsBar from "@/components/ProjectsBar";
 import DnaDiff from "@/components/DnaDiff";
+import TokenExport from "@/components/TokenExport";
 import {
     BrutalCard,
     BrutalButton,
@@ -43,6 +44,7 @@ export default function Extractor() {
     const [activeProjectId, setActiveProjectId] = useState(null);
     const [projectsVersion, setProjectsVersion] = useState(0);
     const [showDiff, setShowDiff] = useState(false);
+    const [tokenExportFor, setTokenExportFor] = useState(null);
 
     // When a project is selected, load its extractions
     useEffect(() => {
@@ -439,6 +441,14 @@ export default function Extractor() {
                 <div className="lg:col-span-7 xl:col-span-8 p-4 md:p-6 bg-[#FAFAFA] space-y-4">
                     {showDiff && <DnaDiff onClose={() => setShowDiff(false)} />}
 
+                    {tokenExportFor && (
+                        <TokenExport
+                            extractionId={tokenExportFor.id}
+                            label={tokenExportFor.label}
+                            onClose={() => setTokenExportFor(null)}
+                        />
+                    )}
+
                     <div className="flex items-center justify-between">
                         <Overline>05 · extracted data</Overline>
                         <Tag tone="black">
@@ -451,6 +461,7 @@ export default function Extractor() {
                             record={dna}
                             index="dna"
                             onRemove={() => setDna(null)}
+                            onExportTokens={setTokenExportFor}
                         />
                     )}
 
@@ -464,6 +475,7 @@ export default function Extractor() {
                                 index={i}
                                 defaultOpen={i === 0}
                                 onRemove={() => removeExtraction(e.id)}
+                                onExportTokens={setTokenExportFor}
                             />
                         ))
                     )}

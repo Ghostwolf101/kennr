@@ -11,6 +11,7 @@ import {
     Browser,
     Image as ImageIcon,
     Globe,
+    Palette,
 } from "@phosphor-icons/react";
 import { BrutalCard, BrutalButton, Overline, Tag } from "./ui-brutal";
 
@@ -512,6 +513,7 @@ export default function ExtractionCard({
     record,
     index,
     onRemove,
+    onExportTokens,
     defaultOpen = true,
 }) {
     const [open, setOpen] = useState(defaultOpen);
@@ -563,6 +565,16 @@ export default function ExtractionCard({
                     </span>
                 </button>
                 <div className="flex items-center gap-2 shrink-0">
+                    {onExportTokens && (
+                        <button
+                            className="px-2 py-1 brutal-border text-[10px] uppercase font-mono hover:bg-[#FFDF00]"
+                            onClick={() => onExportTokens(record)}
+                            data-testid={`export-tokens-${index}`}
+                            title="Export tokens (CSS / Tailwind / SCSS)"
+                        >
+                            <Palette size={12} />
+                        </button>
+                    )}
                     <button
                         className="px-2 py-1 brutal-border text-[10px] uppercase font-mono hover:bg-black hover:text-white"
                         onClick={() => copy(record.data)}

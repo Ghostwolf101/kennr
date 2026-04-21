@@ -1,0 +1,240 @@
+<!doctype html>
+<html>
+    <head>
+        <meta charset="utf-8" />
+        <title>Emergent Extractor</title>
+        <style>
+            @import url("https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@800,500,700,900&display=swap");
+            @import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap");
+
+            * {
+                box-sizing: border-box;
+            }
+
+            body {
+                margin: 0;
+                width: 340px;
+                padding: 16px;
+                background: #fff;
+                color: #0a0a0a;
+                font-family: "IBM Plex Mono", monospace;
+                font-size: 13px;
+            }
+
+            header {
+                margin: -16px -16px 12px;
+                padding: 12px 16px;
+                background: #0a0a0a;
+                color: #fff;
+                border-bottom: 2px solid #0a0a0a;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            header .logo {
+                width: 24px;
+                height: 24px;
+                background: #ffdf00;
+                display: grid;
+                place-items: center;
+                font-family: "Cabinet Grotesk", sans-serif;
+                font-weight: 900;
+                color: #0a0a0a;
+                font-size: 14px;
+                line-height: 1;
+            }
+            header h1 {
+                font-family: "Cabinet Grotesk", sans-serif;
+                font-weight: 900;
+                font-size: 16px;
+                margin: 0;
+                letter-spacing: -0.04em;
+            }
+            header small {
+                margin-left: auto;
+                font-size: 10px;
+                opacity: 0.7;
+                text-transform: uppercase;
+                letter-spacing: 0.1em;
+            }
+
+            .overline {
+                text-transform: uppercase;
+                letter-spacing: 0.12em;
+                font-size: 10px;
+                color: #555;
+                margin-bottom: 4px;
+            }
+
+            label {
+                display: block;
+                margin-bottom: 12px;
+            }
+
+            input[type="text"] {
+                width: 100%;
+                border: 2px solid #0a0a0a;
+                background: #fff;
+                padding: 8px 10px;
+                font-family: inherit;
+                font-size: 12px;
+                outline: none;
+            }
+            input[type="text"]:focus {
+                border-color: #ff3b30;
+            }
+
+            .checkbox-row {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                margin-bottom: 8px;
+                font-size: 11px;
+            }
+
+            .current {
+                border: 2px solid #0a0a0a;
+                padding: 8px;
+                margin-bottom: 12px;
+                background: #f5f5f5;
+            }
+            .current .url {
+                font-size: 11px;
+                word-break: break-all;
+                color: #333;
+            }
+            .current .title {
+                font-family: "Cabinet Grotesk", sans-serif;
+                font-weight: 800;
+                font-size: 13px;
+                letter-spacing: -0.02em;
+                margin-bottom: 2px;
+            }
+
+            button {
+                width: 100%;
+                border: 2px solid #0a0a0a;
+                background: #0a0a0a;
+                color: #fff;
+                padding: 10px;
+                font-family: inherit;
+                font-size: 11px;
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.08em;
+                cursor: pointer;
+                box-shadow: 4px 4px 0 0 #0a0a0a;
+                transition:
+                    transform 0.08s,
+                    box-shadow 0.08s;
+            }
+            button:hover {
+                transform: translate(-2px, -2px);
+                box-shadow: 6px 6px 0 0 #0a0a0a;
+            }
+            button:active {
+                transform: translate(0, 0);
+                box-shadow: 2px 2px 0 0 #0a0a0a;
+            }
+            button:disabled {
+                opacity: 0.4;
+                cursor: not-allowed;
+                box-shadow: 2px 2px 0 0 #0a0a0a;
+            }
+            button.primary {
+                background: #ff3b30;
+            }
+            button.accent {
+                background: #ffdf00;
+                color: #0a0a0a;
+            }
+            button + button {
+                margin-top: 8px;
+            }
+
+            .status {
+                margin-top: 12px;
+                padding: 8px;
+                border: 2px solid #0a0a0a;
+                font-size: 11px;
+                display: none;
+            }
+            .status.ok {
+                background: #ffdf00;
+            }
+            .status.error {
+                background: #fff;
+                border-color: #ff3b30;
+                color: #ff3b30;
+            }
+            .status.loading {
+                background: #0a0a0a;
+                color: #fff;
+            }
+            .status a {
+                color: inherit;
+                text-decoration: underline;
+            }
+
+            .split {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 0;
+            }
+            .split button {
+                width: auto;
+                box-shadow: none;
+            }
+            .split button:first-child {
+                border-right: 0;
+            }
+            .split button + button {
+                margin-top: 0;
+            }
+        </style>
+    </head>
+    <body>
+        <header>
+            <div class="logo">E</div>
+            <h1>EXTRACTOR</h1>
+            <small>v0.1</small>
+        </header>
+
+        <div class="overline">current tab</div>
+        <div class="current">
+            <div class="title" id="tab-title">—</div>
+            <div class="url" id="tab-url">—</div>
+        </div>
+
+        <label>
+            <div class="overline">backend URL</div>
+            <input
+                type="text"
+                id="backend-url"
+                placeholder="https://your-extractor.preview.emergentagent.com"
+            />
+        </label>
+
+        <label>
+            <div class="overline">project name (optional)</div>
+            <input
+                type="text"
+                id="project-name"
+                placeholder="group captures under a name"
+            />
+        </label>
+
+        <div class="checkbox-row">
+            <input type="checkbox" id="full-page" checked />
+            <label for="full-page" style="margin: 0">full-page screenshot (via extractor server)</label>
+        </div>
+
+        <button id="capture-html" class="primary">⛓ capture outerHTML</button>
+        <button id="capture-shot" class="accent">📷 capture screenshot</button>
+        <button id="capture-both">⚡ capture both</button>
+
+        <div id="status" class="status"></div>
+
+        <script src="popup.js"></script>
+    </body>
+</html>

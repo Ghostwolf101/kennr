@@ -3,7 +3,7 @@ EMERGENT EXTRACTOR — Backend
 Extracts structured design + code data from React source, HTML, URLs and screenshots.
 Output is AI-consumable JSON/Markdown for use by other AI agents.
 """
-from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form, Request, Depends
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -17,11 +17,16 @@ import json
 import base64
 import io
 import logging
+import asyncio
+import ipaddress
+import socket
+from urllib.parse import urlparse
 from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone
-from collections import Counter
+from collections import Counter, defaultdict, deque
+from time import time as _now
 from PIL import Image
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
@@ -40,6 +45,89 @@ api_router = APIRouter(prefix="/api")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("extractor")
+
+
+# ============ SSRF GUARD ============
+BLOCKED_NETS = [
+    ipaddress.ip_network("0.0.0.0/8"),
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("100.64.0.0/10"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),  # link-local + AWS/GCP metadata
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+    ipaddress.ip_network("fe80::/10"),
+]
+BLOCKED_HOSTNAMES = {"localhost", "metadata.google.internal", "metadata"}
+
+
+def validate_public_url(url: str) -> str:
+    """Raise HTTPException 400 if URL points to private/internal infra."""
+    t = url.strip()
+    if not re.match(r"^https?://", t, re.I):
+        t = "https://" + t
+    p = urlparse(t)
+    if p.scheme not in ("http", "https"):
+        raise HTTPException(400, "Only http(s) URLs allowed")
+    host = (p.hostname or "").lower()
+    if not host:
+        raise HTTPException(400, "URL missing hostname")
+    if host in BLOCKED_HOSTNAMES or host.endswith(".local") or host.endswith(".internal"):
+        raise HTTPException(400, f"Blocked hostname: {host}")
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        raise HTTPException(400, f"Cannot resolve hostname: {host}")
+    for info in infos:
+        ip_str = info[4][0]
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            continue
+        if any(ip in n for n in BLOCKED_NETS):
+            raise HTTPException(400, f"Blocked private/internal IP for {host}: {ip}")
+    return t
+
+
+# ============ RATE LIMITER ============
+RATE_WINDOW_SEC = 3600
+RATE_LIMIT_LLM = int(os.environ.get("RATE_LIMIT_LLM", "40"))  # per IP per hour
+RATE_LIMIT_CHEAP = int(os.environ.get("RATE_LIMIT_CHEAP", "300"))  # per IP per hour for non-LLM
+_rate_buckets: Dict[str, deque] = defaultdict(deque)
+
+
+def _client_ip(request: Request) -> str:
+    fwd = request.headers.get("x-forwarded-for")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.client.host if request.client else "anonymous"
+
+
+def _rate_check(request: Request, limit: int, bucket_key: str):
+    ip = _client_ip(request)
+    now = _now()
+    key = f"{bucket_key}:{ip}"
+    bucket = _rate_buckets[key]
+    # prune
+    while bucket and now - bucket[0] > RATE_WINDOW_SEC:
+        bucket.popleft()
+    if len(bucket) >= limit:
+        retry_in = int(RATE_WINDOW_SEC - (now - bucket[0]))
+        raise HTTPException(
+            429,
+            f"Rate limit exceeded ({limit}/hour for {bucket_key}). Retry in {retry_in}s.",
+        )
+    bucket.append(now)
+
+
+def rate_limit_llm(request: Request):
+    _rate_check(request, RATE_LIMIT_LLM, "llm")
+
+
+def rate_limit_cheap(request: Request):
+    _rate_check(request, RATE_LIMIT_CHEAP, "cheap")
 
 
 # ============ MODELS ============
@@ -247,8 +335,8 @@ def extract_html_data(html: str, source_url: Optional[str] = None) -> Dict[str, 
     colors = Counter(HEX_RE.findall(style_text) + RGB_RE.findall(style_text) + HSL_RE.findall(style_text))
 
     # fonts (font-family usage)
-    fonts = Counter(re.findall(r"font-family\s*:\s*([^;]+)", style_text))
-    fonts = Counter({k.strip().strip("'\""): v for k, v in fonts.items()})
+    fonts = Counter(re.findall(r"font-family\s*:\s*([^;}\n]+)", style_text))
+    fonts = Counter({k.strip().strip("'\"")[:60]: v for k, v in fonts.items()})
 
     # google fonts links
     google_fonts = [link.get("href") for link in soup.find_all("link") if link.get("href") and "fonts.googleapis" in link.get("href", "")]
@@ -487,18 +575,24 @@ async def extract_html(payload: HtmlExtractInput):
 
 
 @api_router.post("/extract/url")
-async def extract_url(payload: UrlExtractInput):
+async def extract_url(payload: UrlExtractInput, request: Request):
+    rate_limit_cheap(request)
     try:
-        html = await fetch_url_html(payload.url)
+        safe_url = validate_public_url(payload.url)
+    except HTTPException:
+        raise
+    try:
+        html = await fetch_url_html(safe_url)
     except Exception as e:
         raise HTTPException(400, f"Failed to fetch URL: {e}")
-    data = extract_html_data(html, payload.url)
-    rec = await save_extraction("url", data, label=payload.url)
+    data = extract_html_data(html, safe_url)
+    rec = await save_extraction("url", data, label=safe_url)
     return {"id": rec.id, "kind": "url", "data": data, "html_length": len(html)}
 
 
 @api_router.post("/extract/screenshot")
-async def extract_screenshot(payload: ScreenshotExtractInput):
+async def extract_screenshot(payload: ScreenshotExtractInput, request: Request):
+    rate_limit_llm(request)
     # normalize: decode, ensure PNG/JPEG, resize if huge
     try:
         raw_bytes = base64.b64decode(payload.image_base64)
@@ -523,7 +617,8 @@ async def extract_screenshot(payload: ScreenshotExtractInput):
 
 
 @api_router.post("/analyze/dna")
-async def analyze_dna(payload: CombinedAnalyzeInput):
+async def analyze_dna(payload: CombinedAnalyzeInput, request: Request):
+    rate_limit_llm(request)
     if not payload.extraction_ids:
         raise HTTPException(400, "No extraction_ids provided")
     sources = []
@@ -558,45 +653,68 @@ async def delete_extraction(ext_id: str):
 
 
 # ============ URL SCREENSHOT (PLAYWRIGHT) ============
+# Singleton browser pool (lazy init) — cut cold-start per request
+_pw_lock = asyncio.Lock()
+_pw_playwright = None
+_pw_browser = None
+_pw_uses = 0
+_PW_RECYCLE_AFTER = int(os.environ.get("PW_RECYCLE_AFTER", "40"))
+
+
+async def _get_browser():
+    global _pw_playwright, _pw_browser, _pw_uses
+    from playwright.async_api import async_playwright
+
+    async with _pw_lock:
+        needs_launch = _pw_browser is None or _pw_uses >= _PW_RECYCLE_AFTER
+        if needs_launch:
+            if _pw_browser is not None:
+                try:
+                    await _pw_browser.close()
+                except Exception:
+                    pass
+            if _pw_playwright is None:
+                _pw_playwright = await async_playwright().start()
+            _pw_browser = await _pw_playwright.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+            )
+            _pw_uses = 0
+            logger.info("Launched fresh headless chromium")
+        _pw_uses += 1
+        return _pw_browser
+
+
 async def capture_url_screenshot(
     url: str,
     full_page: bool = True,
     viewport_width: int = 1440,
     viewport_height: int = 900,
 ) -> bytes:
-    from playwright.async_api import async_playwright
-
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage"],
-        )
+    browser = await _get_browser()
+    context = await browser.new_context(
+        viewport={"width": viewport_width, "height": viewport_height},
+        user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    )
+    try:
+        page = await context.new_page()
         try:
-            context = await browser.new_context(
-                viewport={"width": viewport_width, "height": viewport_height},
-                user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            )
-            page = await context.new_page()
-            try:
-                await page.goto(url, wait_until="networkidle", timeout=25000)
-            except Exception:
-                # Fallback: wait for domcontentloaded if networkidle times out (SPAs)
-                await page.goto(url, wait_until="domcontentloaded", timeout=20000)
-            await page.wait_for_timeout(1200)
-            png_bytes = await page.screenshot(full_page=full_page, type="png")
-            return png_bytes
-        finally:
-            await browser.close()
+            await page.goto(url, wait_until="networkidle", timeout=25000)
+        except Exception:
+            await page.goto(url, wait_until="domcontentloaded", timeout=20000)
+        await page.wait_for_timeout(1200)
+        return await page.screenshot(full_page=full_page, type="png")
+    finally:
+        await context.close()
 
 
 @api_router.post("/screenshot/url")
-async def screenshot_from_url(payload: UrlScreenshotInput):
-    target = payload.url.strip()
-    if not re.match(r"^https?://", target, re.I):
-        target = "https://" + target
+async def screenshot_from_url(payload: UrlScreenshotInput, request: Request):
+    rate_limit_llm(request)
+    safe_url = validate_public_url(payload.url)
     try:
         png_bytes = await capture_url_screenshot(
-            target,
+            safe_url,
             full_page=payload.full_page,
             viewport_width=payload.viewport_width,
             viewport_height=payload.viewport_height,
@@ -614,15 +732,15 @@ async def screenshot_from_url(payload: UrlScreenshotInput):
     img.save(buf, format="JPEG", quality=85)
     b64 = base64.b64encode(buf.getvalue()).decode()
 
-    analysis = await analyze_screenshot(b64, payload.label or target)
-    analysis["_source_url"] = target
-    rec = await save_extraction("screenshot", analysis, label=payload.label or target)
+    analysis = await analyze_screenshot(b64, payload.label or safe_url)
+    analysis["_source_url"] = safe_url
+    rec = await save_extraction("screenshot", analysis, label=payload.label or safe_url)
     return {
         "id": rec.id,
         "kind": "screenshot",
         "data": analysis,
         "preview_base64": b64,
-        "source_url": target,
+        "source_url": safe_url,
     }
 
 
@@ -711,7 +829,8 @@ async def delete_project(pid: str):
 
 
 @api_router.post("/projects/{pid}/analyze-dna")
-async def analyze_project_dna(pid: str):
+async def analyze_project_dna(pid: str, request: Request):
+    rate_limit_llm(request)
     doc = await db.projects.find_one({"id": pid}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Project not found")
@@ -758,7 +877,8 @@ overall_similarity is 0-100.
 
 
 @api_router.post("/dna/diff")
-async def dna_diff(payload: DnaDiffInput):
+async def dna_diff(payload: DnaDiffInput, request: Request):
+    rate_limit_llm(request)
     a = await db.extractions.find_one({"id": payload.dna_a_id, "kind": "dna"}, {"_id": 0})
     b = await db.extractions.find_one({"id": payload.dna_b_id, "kind": "dna"}, {"_id": 0})
     if not a or not b:
@@ -799,6 +919,262 @@ async def dna_diff(payload: DnaDiffInput):
     }
 
 
+# ============ TOKEN EXPORT (CSS / Tailwind / SCSS) ============
+def _normalize_hex(c: str) -> Optional[str]:
+    if not isinstance(c, str):
+        return None
+    c = c.strip()
+    if not re.match(r"^#[0-9a-fA-F]{3,8}$", c):
+        return None
+    if len(c) == 4:  # #abc → #aabbcc
+        c = "#" + "".join(ch * 2 for ch in c[1:])
+    return c.lower()[:7]
+
+
+def _slugify(text: str, fallback: str = "token") -> str:
+    if not text:
+        return fallback
+    s = re.sub(r"[^a-zA-Z0-9]+", "-", str(text).lower()).strip("-")
+    return s[:40] or fallback
+
+
+def _extract_tokens_from_record(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """Pull a unified {colors, fonts, radii, shadows, philosophy} dict from any record kind."""
+    kind = doc.get("kind")
+    data = doc.get("data", {}) or {}
+    tokens: Dict[str, Any] = {
+        "primary": [], "neutral": [], "accent": [],
+        "all_colors": [],
+        "fonts": {"heading": None, "body": None, "likely": []},
+        "radius": None, "shadow": None, "spacing": None, "motion": None,
+        "philosophy": None, "archetype": None, "one_liner": None,
+        "source_kind": kind,
+        "source_label": doc.get("label"),
+    }
+
+    if kind == "dna":
+        fp = data.get("project_fingerprint", {}) or {}
+        dt = data.get("design_tokens", {}) or {}
+        tokens["one_liner"] = fp.get("one_liner")
+        tokens["philosophy"] = fp.get("design_philosophy")
+        tokens["archetype"] = fp.get("archetype")
+        tokens["primary"] = [_normalize_hex(c) for c in (dt.get("primary_colors") or []) if _normalize_hex(c)]
+        tokens["neutral"] = [_normalize_hex(c) for c in (dt.get("neutral_colors") or []) if _normalize_hex(c)]
+        tokens["accent"] = [_normalize_hex(c) for c in (dt.get("accent_colors") or []) if _normalize_hex(c)]
+        tokens["all_colors"] = tokens["primary"] + tokens["neutral"] + tokens["accent"]
+        typo = dt.get("typography") or {}
+        tokens["fonts"]["heading"] = typo.get("headings")
+        tokens["fonts"]["body"] = typo.get("body")
+        tokens["radius"] = dt.get("border_radius_language")
+        tokens["shadow"] = dt.get("shadow_language")
+        tokens["spacing"] = dt.get("spacing_rhythm")
+        tokens["motion"] = dt.get("motion_language")
+
+    elif kind == "screenshot":
+        aesthetic = data.get("aesthetic", {}) or {}
+        tokens["philosophy"] = aesthetic.get("mood")
+        tokens["archetype"] = aesthetic.get("archetype")
+        tokens["one_liner"] = aesthetic.get("archetype")
+        for entry in data.get("color_palette", []) or []:
+            h = _normalize_hex(entry.get("hex") if isinstance(entry, dict) else entry)
+            if not h:
+                continue
+            role = (entry.get("role") if isinstance(entry, dict) else "") or ""
+            tokens["all_colors"].append(h)
+            if "accent" in role:
+                tokens["accent"].append(h)
+            elif role in ("primary", "secondary"):
+                tokens["primary"].append(h)
+            else:
+                tokens["neutral"].append(h)
+        typo = data.get("typography", {}) or {}
+        tokens["fonts"]["heading"] = typo.get("heading_feel") or typo.get("primary_style")
+        tokens["fonts"]["body"] = typo.get("body_feel") or typo.get("primary_style")
+        tokens["fonts"]["likely"] = typo.get("likely_fonts") or []
+
+    elif kind in ("html", "url"):
+        colors = list((data.get("color_tokens") or {}).keys())
+        hexes = [_normalize_hex(c) for c in colors]
+        tokens["all_colors"] = [h for h in hexes if h]
+        # naive split: first = primary, light ones = neutral, rest = accent
+        for h in tokens["all_colors"][:12]:
+            r = int(h[1:3], 16)
+            g = int(h[3:5], 16)
+            bb = int(h[5:7], 16)
+            lum = 0.299*r + 0.587*g + 0.114*bb
+            if lum > 220 or lum < 30:
+                tokens["neutral"].append(h)
+            elif not tokens["primary"]:
+                tokens["primary"].append(h)
+            else:
+                tokens["accent"].append(h)
+        fonts = list((data.get("font_families") or {}).keys())
+        if fonts:
+            tokens["fonts"]["heading"] = fonts[0]
+            tokens["fonts"]["body"] = fonts[0] if len(fonts) == 1 else fonts[1]
+            tokens["fonts"]["likely"] = fonts[:3]
+
+    elif kind == "react":
+        colors = list((data.get("color_tokens") or {}).keys())
+        hexes = [_normalize_hex(c) for c in colors if _normalize_hex(c)]
+        tokens["all_colors"] = hexes
+        for h in hexes[:12]:
+            r = int(h[1:3], 16)
+            g = int(h[3:5], 16)
+            bb = int(h[5:7], 16)
+            lum = 0.299*r + 0.587*g + 0.114*bb
+            if lum > 220 or lum < 30:
+                tokens["neutral"].append(h)
+            elif not tokens["primary"]:
+                tokens["primary"].append(h)
+            else:
+                tokens["accent"].append(h)
+
+    # de-dup while preserving order
+    for key in ("primary", "neutral", "accent", "all_colors"):
+        seen = set()
+        out = []
+        for c in tokens[key]:
+            if c and c not in seen:
+                seen.add(c)
+                out.append(c)
+        tokens[key] = out
+    return tokens
+
+
+def _render_css_vars(t: Dict[str, Any]) -> str:
+    lines = [":root {"]
+    for i, c in enumerate(t["primary"]):
+        lines.append(f"  --color-primary{'' if i == 0 else '-' + str(i+1)}: {c};")
+    for i, c in enumerate(t["neutral"]):
+        lines.append(f"  --color-neutral-{i+1}: {c};")
+    for i, c in enumerate(t["accent"]):
+        lines.append(f"  --color-accent{'' if i == 0 else '-' + str(i+1)}: {c};")
+    if t["fonts"].get("heading"):
+        lines.append(f'  --font-heading: {t["fonts"]["heading"]};')
+    if t["fonts"].get("body"):
+        lines.append(f'  --font-body: {t["fonts"]["body"]};')
+    if t.get("radius"):
+        lines.append(f'  /* radius language: {t["radius"]} */')
+    if t.get("shadow"):
+        lines.append(f'  /* shadow language: {t["shadow"]} */')
+    if t.get("spacing"):
+        lines.append(f'  /* spacing rhythm: {t["spacing"]} */')
+    if t.get("motion"):
+        lines.append(f'  /* motion language: {t["motion"]} */')
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def _render_scss(t: Dict[str, Any]) -> str:
+    lines = [f"// Source: {t.get('source_kind')} // {t.get('source_label') or ''}"]
+    for i, c in enumerate(t["primary"]):
+        lines.append(f"$primary{'' if i == 0 else '-' + str(i+1)}: {c};")
+    for i, c in enumerate(t["neutral"]):
+        lines.append(f"$neutral-{i+1}: {c};")
+    for i, c in enumerate(t["accent"]):
+        lines.append(f"$accent{'' if i == 0 else '-' + str(i+1)}: {c};")
+    if t["fonts"].get("heading"):
+        lines.append(f'$font-heading: "{t["fonts"]["heading"]}";')
+    if t["fonts"].get("body"):
+        lines.append(f'$font-body: "{t["fonts"]["body"]}";')
+    return "\n".join(lines)
+
+
+def _render_tailwind_config(t: Dict[str, Any]) -> str:
+    colors_obj: Dict[str, Any] = {}
+    if t["primary"]:
+        colors_obj["primary"] = (
+            t["primary"][0] if len(t["primary"]) == 1
+            else {str(i * 100 + 100): c for i, c in enumerate(t["primary"][:9])}
+        )
+    if t["neutral"]:
+        colors_obj["neutral"] = {str(i * 100 + 100): c for i, c in enumerate(t["neutral"][:9])}
+    if t["accent"]:
+        colors_obj["accent"] = (
+            t["accent"][0] if len(t["accent"]) == 1
+            else {str(i * 100 + 100): c for i, c in enumerate(t["accent"][:9])}
+        )
+    font_family: Dict[str, List[str]] = {}
+    if t["fonts"].get("heading"):
+        font_family["heading"] = [t["fonts"]["heading"], "sans-serif"]
+    if t["fonts"].get("body"):
+        font_family["body"] = [t["fonts"]["body"], "sans-serif"]
+
+    theme_extend: Dict[str, Any] = {}
+    if colors_obj:
+        theme_extend["colors"] = colors_obj
+    if font_family:
+        theme_extend["fontFamily"] = font_family
+
+    config = {
+        "content": ["./src/**/*.{js,jsx,ts,tsx}"],
+        "theme": {"extend": theme_extend},
+        "plugins": [],
+    }
+    body = json.dumps(config, indent=2)
+    return f"/** @type {{import('tailwindcss').Config}} */\nmodule.exports = {body};\n"
+
+
+def _render_markdown_legend(t: Dict[str, Any]) -> str:
+    lines = [
+        "# Design Tokens",
+        f"_Source: `{t.get('source_kind')}` · {t.get('source_label') or ''}_",
+        "",
+    ]
+    if t.get("one_liner"):
+        lines.append(f"> {t['one_liner']}")
+        lines.append("")
+    if t.get("philosophy"):
+        lines.append(f"**Philosophy**: {t['philosophy']}")
+    if t.get("archetype"):
+        lines.append(f"**Archetype**: {t['archetype']}")
+    if t.get("philosophy") or t.get("archetype"):
+        lines.append("")
+    if t["primary"]:
+        lines.append("## Primary")
+        for c in t["primary"]:
+            lines.append(f"- `{c}`")
+    if t["neutral"]:
+        lines.append("## Neutral")
+        for c in t["neutral"]:
+            lines.append(f"- `{c}`")
+    if t["accent"]:
+        lines.append("## Accent")
+        for c in t["accent"]:
+            lines.append(f"- `{c}`")
+    if t["fonts"].get("heading") or t["fonts"].get("body"):
+        lines.append("## Typography")
+        if t["fonts"].get("heading"):
+            lines.append(f"- **heading**: {t['fonts']['heading']}")
+        if t["fonts"].get("body"):
+            lines.append(f"- **body**: {t['fonts']['body']}")
+    if any(t.get(k) for k in ("radius", "shadow", "spacing", "motion")):
+        lines.append("## Language")
+        for k in ("radius", "shadow", "spacing", "motion"):
+            if t.get(k):
+                lines.append(f"- **{k}**: {t[k]}")
+    return "\n".join(lines)
+
+
+@api_router.get("/tokens/export/{ext_id}")
+async def export_tokens(ext_id: str):
+    doc = await db.extractions.find_one({"id": ext_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Extraction not found")
+    tokens = _extract_tokens_from_record(doc)
+    return {
+        "source_id": ext_id,
+        "source_kind": doc.get("kind"),
+        "source_label": doc.get("label"),
+        "tokens": tokens,
+        "css": _render_css_vars(tokens),
+        "scss": _render_scss(tokens),
+        "tailwind_config_js": _render_tailwind_config(tokens),
+        "markdown_legend": _render_markdown_legend(tokens),
+    }
+
+
 app.include_router(api_router)
 app.add_middleware(
     CORSMiddleware,
@@ -822,4 +1198,12 @@ async def startup_setup():
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
+    global _pw_browser, _pw_playwright
     client.close()
+    try:
+        if _pw_browser is not None:
+            await _pw_browser.close()
+        if _pw_playwright is not None:
+            await _pw_playwright.stop()
+    except Exception:
+        pass
