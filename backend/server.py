@@ -3,8 +3,7 @@ EMERGENT EXTRACTOR — Backend
 Extracts structured design + code data from React source, HTML, URLs and screenshots.
 Output is AI-consumable JSON/Markdown for use by other AI agents.
 """
-from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form, Request, Depends
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, APIRouter, HTTPException, Request
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient

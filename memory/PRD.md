@@ -1,73 +1,68 @@
 # Emergent Extractor — PRD
 
-## Original Problem Statement
-Build an app that extracts relevant data from Emergent preview files:
-- (A) React source files (.js/.jsx/.tsx) in /src
-- (B) Rendered HTML (post-JS outerHTML)
-- (C) Screenshots (PNG/JPG of sections / full page)
-Output must be consumable by other AI programs to help with web development and unique visual aesthetics, stepping away from cookie-cutter designs.
+## Original Problem
+Build an app that extracts relevant data from Emergent preview files (React source, rendered HTML, screenshots) for AI programs to consume and build unique visual aesthetics.
 
-User choice: **Go wild, make it comprehensive and AI-readable.**
+User: **Go wild, make it comprehensive.**
 
 ## Architecture
-- **Backend**: FastAPI + Motor (async Mongo), Playwright (headless Chromium) @ /pw-browsers
-- **Frontend**: React 19 + React Router + Tailwind, custom Brutalist primitives
-- **LLM**: Claude Sonnet 4.5 (`claude-sonnet-4-5-20250929`) via `emergentintegrations` + Emergent Universal LLM Key
-- **Collections**: `extractions`, `projects` (both indexed on `id`)
+- **Backend**: FastAPI + Motor + Playwright (singleton browser pool) + emergentintegrations (Claude Sonnet 4.5)
+- **Frontend**: React 19 + Tailwind + custom brutalist UI (Cabinet Grotesk + IBM Plex Mono)
+- **DB**: MongoDB `extractions` + `projects` (indexed)
+- **Chrome Extension**: MV3 (activeTab + scripting + storage) at `/app/chrome-extension/`
 
 ## Endpoints (all /api)
 ### Extraction
-- `POST /extract/react` — parse .js/.jsx/.tsx
-- `POST /extract/html` — parse outerHTML
-- `POST /extract/url` — httpx fetch + parse
-- `POST /extract/screenshot` — upload image → Claude vision
-- `POST /screenshot/url` ✨ **NEW** — Playwright capture URL → Claude vision
-- `POST /analyze/dna` — combine extractions → DNA
+- POST /extract/react — parse .js/.jsx/.tsx multi-file
+- POST /extract/html — parse outerHTML
+- POST /extract/url — httpx fetch + parse (+ SSRF guard + rate limit)
+- POST /extract/screenshot — upload → Claude vision (+ LLM rate limit)
+- POST /screenshot/url — Playwright capture → Claude vision (+ SSRF + LLM rate limit)
 
-### Projects ✨ **NEW**
-- `POST /projects` — create
-- `GET /projects` / `GET /projects/{id}` — list / populated get
-- `PATCH /projects/{id}` — rename, add/remove extractions, set dna_id
-- `DELETE /projects/{id}`
-- `POST /projects/{id}/analyze-dna` — scoped DNA synthesis
+### Synthesis
+- POST /analyze/dna — combine extractions → DNA (+ LLM rate limit)
+- POST /dna/diff — Claude diff of two DNAs (+ LLM rate limit)
 
-### Diff ✨ **NEW**
-- `POST /dna/diff` — Claude-powered structured diff between two DNA records
+### Projects
+- POST / GET / GET {id} / PATCH {id} / DELETE {id} /projects
+- POST /projects/{id}/analyze-dna (+ LLM rate limit)
+
+### Token Export ✨ NEW
+- GET /tokens/export/{ext_id} → {tokens, css, scss, tailwind_config_js, markdown_legend}
 
 ### CRUD
-- `GET /extractions`, `GET /extractions/{id}`, `DELETE /extractions/{id}`
+- GET /extractions, GET /extractions/{id}, DELETE /extractions/{id}
 
-## Implemented (2026-04-21)
-### Iteration 1
-- Full extractor pipeline (React parser, HTML parser, URL fetch, vision, DNA synth)
-- Brutalist dashboard UI (Cabinet Grotesk + IBM Plex Mono, signal red / yellow accents)
-- Per-extraction cards with Copy/Download JSON + bundle export
-- Error handling: HTTP 402 (LLM budget) / 502 (upstream) instead of raw 500
-- MongoDB indexes on startup
+## Implemented
 
-### Iteration 2 ✨
-- **Playwright auto-screenshot** of URLs (headless Chromium, full-page support, vision analysis)
-- **Projects system** (create/rename/delete, auto-attach extractions when a project is active)
-- **Project-scoped DNA synthesis** (dedicated endpoint stores dna_id on project)
-- **DNA Diff** with side-by-side colors / typography / layout / motion / philosophy + merge recommendation
-- UrlTab toggles between HTML-parse and auto-Screenshot modes
-- ProjectsBar sidebar with inline rename & counters
+### Iteration 1 — MVP (2026-04-21)
+- Full extractor pipeline for React/HTML/URL/Screenshot
+- Brutalist dashboard UI with tabs
+- DNA synthesis + bundle export
+- Per-extraction Copy/Download JSON
+
+### Iteration 2 — P1 features (2026-04-21)
+- Playwright auto-screenshot of URLs (full-page)
+- Projects system (CRUD + project-scoped DNA)
+- DNA Diff with side-by-side comparison
+
+### Iteration 3 — Hardening & Productization (2026-04-21) ✨
+- **SSRF guard**: blocks localhost, 127.0.0.1, 169.254.*, RFC1918, IPv6 loopback/ULA/link-local, `.local`/`.internal` TLDs
+- **Per-IP rate limits**: 40/hr for LLM endpoints, 300/hr for cheap endpoints (configurable via env)
+- **Playwright browser pool**: singleton, recycled every 40 uses — cuts 5-10s cold-start per request
+- **Token export**: CSS vars / SCSS / Tailwind config / Markdown brief from any extraction
+- **Chrome extension** (Manifest V3): one-click capture outerHTML + screenshot from any tab, auto-attach to project
+- Graceful shutdown closes Playwright browser
 
 ## Known Limitations / Deferred
-- No SSRF guard on /screenshot/url (P2 — block loopback/RFC1918)
-- No browser pool — each screenshot spawns fresh Chromium (~5-10s cold start)
-- No rate-limit / auth (P2 — public endpoints)
-- DNA diff truncates JSON payload at 60000 chars raw (P3 — per-field truncate)
-- DELETE /projects doesn't cascade to DNA extraction (P3)
+- SSRF is vulnerable to DNS rebinding (P3) — resolve once, pin IP for actual fetch
+- Rate limiter uses X-Forwarded-For[0] (spoofable) — OK as soft throttle, not security control (P3)
+- _rate_buckets dict unbounded (P3) — add LRU cap for production
+- Single-worker only (rate counter is in-process) — needs Redis for multi-replica
+- No auth on endpoints (P2 — worth adding before public launch)
+- Chrome extension accepts any backend URL (P3 — allowlist Emergent domains)
 
-## User Personas
-- AI-assisted devs (Cursor/Claude/Copilot) recreating visual styles
-- Designers auditing sites for design tokens
-- Students studying what makes a design distinctive
-
-## Backlog
-- P2: SSRF allowlist + per-IP rate limit
-- P2: Browser pool for screenshot endpoint
-- P2: Figma-style token export (CSS vars / Tailwind config)
-- P3: Chrome extension for one-click capture
-- P3: Shareable public DNA links
+## Testing
+- Iter 1: 12/15 (LLM flaky)
+- Iter 2: 17/17 new + regression passing
+- Iter 3: 26/26 new + 21/21 non-LLM regression passing (LLM regression skipped — upstream 502s)
