@@ -1,0 +1,65 @@
+{
+  "theme": "light",
+  "archetype": "4 (Swiss & High-Contrast)",
+  "design_philosophy": "Neo-Brutalist Technical Dashboard. Radically functional, raw data exposure, stark contrast, and visible grid lines. 'The Anti-Cookie-Cutter'. Expose the skeleton.",
+  "colors": {
+    "background": "#FFFFFF",
+    "foreground": "#0A0A0A",
+    "primary": "#FF3B30",
+    "primary_foreground": "#FFFFFF",
+    "secondary": "#002FA7",
+    "secondary_foreground": "#FFFFFF",
+    "accent": "#FFDF00",
+    "accent_foreground": "#0A0A0A",
+    "muted": "#F0F0F0",
+    "muted_foreground": "#555555",
+    "border": "#0A0A0A",
+    "surface": "#FFFFFF"
+  },
+  "typography": {
+    "heading_font": "Cabinet Grotesk, sans-serif",
+    "body_font": "IBM Plex Mono, monospace",
+    "rules": {
+      "headings": "Uppercase or tight tracking (-0.05em). Radical weight contrast (Black vs Light). Do not use 'Inter'.",
+      "body": "Monospace for all code context, normal tracking.",
+      "overline": "Uppercase, wide tracking (0.1em), text-xs."
+    }
+  },
+  "spacing_and_layout": {
+    "container": "Use strict grid layouts. Emphasize container bounds.",
+    "padding": "Generous padding for layout regions (p-8 to p-12). Dense padding for data tables/trees (p-2).",
+    "grid_strategy": "Control Room Grid. Border-collapse style or flex with explicit borders to create the 'Technical' grid look. Avoid gaps, use borders to separate items."
+  },
+  "components": {
+    "buttons": "Square corners (rounded-none), 2px solid border-black, hard brutalist drop-shadow (e.g., shadow-[4px_4px_0px_#0A0A0A]). On hover, translate-x-[-2px] translate-y-[-2px] and expand shadow to 6px.",
+    "cards": "Square corners, 2px solid border-black, pure white background. No soft shadows. Header separated by 2px bottom border.",
+    "inputs": "Square corners, 2px solid border-black, focus:ring-0 focus:outline-none focus:border-primary, font-mono placeholder-muted-foreground.",
+    "tabs": "Borders between tabs, active tab gets a primary color bottom border (4px) or background inversion.",
+    "icons_library": "@phosphor-icons/react"
+  },
+  "motion_and_interaction": {
+    "hover": "Brutal, snappy transitions. Instant state changes or extremely fast snappy movement (0.1s duration).",
+    "focus": "2px solid outline in Signal Red (#FF3B30) offset by 2px.",
+    "animations": "Use ASCII or stark geometric loading states (e.g., spinning square or shifting grid) instead of smooth spinners."
+  },
+  "media": {
+    "image_urls": [
+      {
+        "url": "https://images.unsplash.com/photo-1771795220719-d0b9aa35a95a?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2OTF8MHwxfHNlYXJjaHwyfHxnZW9tZXRyaWMlMjBhYnN0cmFjdCUyMHBhdHRlcm4lMjBibGFjayUyMHdoaXRlfGVufDB8fHx8MTc3Njc1MDEyOHww&ixlib=rb-4.1.0&q=85",
+        "description": "Abstract black and white grid fading into white.",
+        "category": "empty_state_background",
+        "instructions": "Use as a background pattern for empty states (like the dropzone area) or the main hero upload zone. Overlay with bg-white/80 to keep text highly readable."
+      }
+    ]
+  },
+  "instructions_to_main_agent": [
+    "Install `@phosphor-icons/react` for technical/sharp icons.",
+    "Add 'IBM Plex Mono' via Google Fonts and 'Cabinet Grotesk' via Fontshare (https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@800,500,700,400,900&display=swap) in index.html.",
+    "Customize Shadcn components heavily: Remove ALL rounded corners (use `rounded-none`), replace all soft shadows with `shadow-[4px_4px_0px_#0A0A0A]`, and ensure borders are stark black (`border-2 border-black`).",
+    "The UI should look like a high-end, brutalist developer tool. Use tabs for the input methods: React Source (.js/.jsx/.tsx), HTML paste, Image upload, URL input.",
+    "For the 'Extracted Data' view, utilize a complex, data-heavy grid layout that exposes component hierarchy, colors, fonts, and patterns. Use monospace font for the data values.",
+    "Use pure HTML/Tailwind for structural bento/grid layouts, utilizing Shadcn primarily for interactive state logic (Tabs, Select, Accordion).",
+    "Implement `data-testid` on all buttons, tabs, inputs, and interactive elements.",
+    "Ensure hover states drastically change color or introduce a hard shadow lift, maintaining the AAA accessibility contrast."
+  ]
+}
