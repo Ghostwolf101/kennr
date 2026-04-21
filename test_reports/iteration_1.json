@@ -1,0 +1,62 @@
+{
+  "summary": "Backend-only e2e testing of Emergent Extractor. All non-LLM endpoints (/api/, react, html, url, screenshot, list, get, delete, validation paths) pass. Screenshot endpoint using Claude Sonnet 4.5 vision works with a real generated UI-mock JPEG and returns full structured JSON (aesthetic/color_palette/typography/layout/ai_prompt_brief). /api/analyze/dna works when the Emergent LLM router responds successfully (verified via manual curl - returns complete DNA schema) but intermittently returns 500 because upstream Anthropic (via Emergent router) occasionally replies with 502 and the backend does NOT catch the ChatError — it bubbles up as an unhandled 500. Same unprotected pattern also exists in /api/extract/screenshot. No MongoDB _id leaks in any response. CORS open.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/analyze/dna",
+        "issue": "Unhandled emergentintegrations.llm.chat.ChatError (litellm.BadGatewayError 502 from upstream) causes raw 500. Endpoint crashed ~3 of 5 attempted runs during testing. No try/except around chat.send_message() in synthesize_dna() (server.py:379). Should catch and either retry (1-2 attempts), return structured {\"_parse_error\": true, \"error\": \"upstream LLM unavailable\"} like analyze_screenshot does for JSON parse failures, or return HTTPException(502, ...) with a clear message.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "POST /api/extract/screenshot",
+        "issue": "Same unprotected pattern: analyze_screenshot() at server.py:310 has no try/except around chat.send_message(). Only JSON parse failures are handled. A transient Emergent LLM 502 will produce an unhandled 500 here too. Did not reproduce during testing (worked 1/1) but identical code risk."
+      },
+      {
+        "endpoint": "POST /api/extract/url",
+        "issue": "fetch_url_html uses r.raise_for_status() inside the fetch, which is caught and rewrapped as HTTPException(400). Correct for 4xx origin errors but a destination returning 5xx also becomes 400 to the caller — consider returning 502 for upstream >=500 to better reflect the failure class."
+      },
+      {
+        "endpoint": "GET /api/extractions",
+        "issue": "No pagination cursor; limit only. For a large collection, clients can't page. Also no total count. Acceptable for MVP."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_extractor_api.py",
+    "/app/test_reports/pytest/iteration_1.xml"
+  ],
+  "action_items": [
+    "Wrap chat.send_message() calls in synthesize_dna() (server.py ~379) and analyze_screenshot() (server.py ~310) with try/except catching emergentintegrations.llm.chat.ChatError and litellm.BadGatewayError. Either (a) retry 1-2 times with small backoff before failing, or (b) return HTTPException(502, 'Upstream LLM temporarily unavailable, please retry') so clients can handle it cleanly instead of an opaque 500.",
+    "Consider adding a small internal retry (tenacity or manual) for upstream 5xx from LlmChat since Emergent router 502s are intermittent.",
+    "Optional: in list_extractions, also project out the 'data' field at the Mongo query level ({'_id':0,'data':0}) — currently the whole doc is pulled from Mongo then stripped client-side which wastes bandwidth for large extractions."
+  ],
+  "critical_code_review_comments": [
+    "server.py:379 and server.py:310 – no error handling around LLM calls. Any transient upstream failure surfaces as a generic 500. Critical for production reliability.",
+    "server.py:441 – getattr(img, 'is_animated', False) followed by img.seek(0) only seeks to frame 0 even if not animated; harmless but the guard is misleading. Consider: if getattr(img,'is_animated',False): img.seek(0)  only when animated.",
+    "server.py:377 – json.dumps(payload)[:60000] silently truncates the DNA source payload. If inputs are large, the JSON will be cut mid-structure producing invalid JSON inside the prompt. Consider truncating per-source instead, or sending structured content via UserMessage with multiple parts.",
+    "server.py:117 – props parsing does a naive split on '='/':' which will misparse complex destructures like {a: {b}} or {a = defaultArr}. Acceptable for MVP but worth flagging.",
+    "server.py:33 – os.environ['MONGO_URL'] will KeyError at import time if missing; intentional fail-fast per environment rules — good.",
+    "Missing global FastAPI exception handler — any unhandled exception returns raw 500 with no JSON body. Add a simple @app.exception_handler(Exception) returning {'error': str(e)} with 500.",
+    "No request size limit on /api/extract/react (payload.files). A huge file list could OOM the regex passes. Consider a soft cap (e.g., 200 files / 2MB per file).",
+    "DB has no index on extractions.id — every get/delete scans. Add: await db.extractions.create_index('id', unique=True) at startup."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_extractor_api.py (new)"
+  ],
+  "success_rate": {
+    "backend": "80% (12/15 deterministic; DNA endpoint ~50% flaky due to upstream + no retry)"
+  },
+  "test_credentials": "Not applicable — no auth on endpoints.",
+  "seed_data_creation": "Tests create TEST_-labeled extractions (react, html, url, screenshot, dna) and delete most of them in a cleanup fixture. Some orphans may remain if DNA test fails mid-flight; they are identifiable by label 'TEST_DNA_Project' / 'TEST_Retry'.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run: cd /app && python -m pytest backend/tests/test_extractor_api.py -v -p no:randomly --tb=short --junitxml=/app/test_reports/pytest/iteration_N.xml  |  Expect 12/15 minimum (root_health, react x2, html, url x2, screenshot x2, list, get x2, delete). The 3 /api/analyze/dna tests are flaky — test_analyze_dna has internal 2x retry with client.close() between attempts, but can still fail when Emergent LLM router returns sustained 502s. Manual verification of DNA: run the ad-hoc curl shown in iteration log (POST extract/react + extract/html, then POST analyze/dna with both ids) — got 200 with full valid schema (project_fingerprint, design_tokens, component_patterns, ai_slop_avoidance, ready_to_use_ai_prompt, ready_to_use_markdown_brief). Screenshot vision test uses a programmatically drawn UI mock (not blank/solid) per /app/image_testing.md. No MongoDB _id leaks observed anywhere. Requests session keep-alive can hang after a backend 500 on DNA — that's why test_analyze_dna_empty_ids / _unknown_ids occasionally time out right after test_analyze_dna; individually they pass instantly (0.3s).",
+  "rca of the issue": "RCA: /api/analyze/dna 500 — synthesize_dna() awaits chat.send_message() with no try/except. The Emergent LLM router occasionally returns 502 BadGateway (transient upstream Anthropic/gateway blip). emergentintegrations raises ChatError, FastAPI has no custom handler, result = raw 500 to client. Reproduce: repeatedly POST /api/analyze/dna with valid extraction_ids — roughly 30-50% return 500 with no JSON body, the other 50% return 200 with valid DNA schema. Mitigation: wrap the call in try/except ChatError/BadGatewayError, retry once with 1-2s sleep, and on final failure raise HTTPException(502, detail='Upstream LLM temporarily unavailable') so clients can handle it deterministically. Same fix should be applied to analyze_screenshot()."
+}
