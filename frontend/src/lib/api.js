@@ -22,6 +22,11 @@ export const extractScreenshot = (image_base64, mime_type, label) =>
         .post("/extract/screenshot", { image_base64, mime_type, label })
         .then((r) => r.data);
 
+export const screenshotUrl = (url, full_page = true, label = null) =>
+    api
+        .post("/screenshot/url", { url, full_page, label })
+        .then((r) => r.data);
+
 export const analyzeDna = (extraction_ids, project_name) =>
     api
         .post("/analyze/dna", { extraction_ids, project_name })
@@ -32,6 +37,28 @@ export const listExtractions = () =>
 
 export const getExtraction = (id) =>
     api.get(`/extractions/${id}`).then((r) => r.data);
+
+// ============ PROJECTS ============
+export const createProject = (name) =>
+    api.post("/projects", { name }).then((r) => r.data);
+
+export const listProjects = () =>
+    api.get("/projects").then((r) => r.data);
+
+export const getProject = (id) =>
+    api.get(`/projects/${id}`).then((r) => r.data);
+
+export const updateProject = (id, patch) =>
+    api.patch(`/projects/${id}`, patch).then((r) => r.data);
+
+export const deleteProject = (id) =>
+    api.delete(`/projects/${id}`).then((r) => r.data);
+
+export const analyzeProjectDna = (id) =>
+    api.post(`/projects/${id}/analyze-dna`).then((r) => r.data);
+
+export const dnaDiff = (dna_a_id, dna_b_id) =>
+    api.post("/dna/diff", { dna_a_id, dna_b_id }).then((r) => r.data);
 
 export const fileToBase64 = (file) =>
     new Promise((resolve, reject) => {

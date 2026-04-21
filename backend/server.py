@@ -75,6 +75,40 @@ class ExtractionRecord(BaseModel):
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
+class UrlScreenshotInput(BaseModel):
+    url: str
+    full_page: bool = True
+    viewport_width: int = 1440
+    viewport_height: int = 900
+    label: Optional[str] = None
+
+
+class ProjectCreateInput(BaseModel):
+    name: str
+
+
+class ProjectUpdateInput(BaseModel):
+    name: Optional[str] = None
+    add_extraction_ids: Optional[List[str]] = None
+    remove_extraction_ids: Optional[List[str]] = None
+    dna_id: Optional[str] = None
+
+
+class Project(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str
+    extraction_ids: List[str] = Field(default_factory=list)
+    dna_id: Optional[str] = None
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+
+class DnaDiffInput(BaseModel):
+    dna_a_id: str
+    dna_b_id: str
+
+
+
 # ============ REACT SOURCE PARSING ============
 HEX_RE = re.compile(r"#(?:[0-9a-fA-F]{3,4}){1,2}\b")
 RGB_RE = re.compile(r"rgba?\([^)]+\)")
@@ -523,6 +557,248 @@ async def delete_extraction(ext_id: str):
     return {"deleted": res.deleted_count}
 
 
+# ============ URL SCREENSHOT (PLAYWRIGHT) ============
+async def capture_url_screenshot(
+    url: str,
+    full_page: bool = True,
+    viewport_width: int = 1440,
+    viewport_height: int = 900,
+) -> bytes:
+    from playwright.async_api import async_playwright
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage"],
+        )
+        try:
+            context = await browser.new_context(
+                viewport={"width": viewport_width, "height": viewport_height},
+                user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            )
+            page = await context.new_page()
+            try:
+                await page.goto(url, wait_until="networkidle", timeout=25000)
+            except Exception:
+                # Fallback: wait for domcontentloaded if networkidle times out (SPAs)
+                await page.goto(url, wait_until="domcontentloaded", timeout=20000)
+            await page.wait_for_timeout(1200)
+            png_bytes = await page.screenshot(full_page=full_page, type="png")
+            return png_bytes
+        finally:
+            await browser.close()
+
+
+@api_router.post("/screenshot/url")
+async def screenshot_from_url(payload: UrlScreenshotInput):
+    target = payload.url.strip()
+    if not re.match(r"^https?://", target, re.I):
+        target = "https://" + target
+    try:
+        png_bytes = await capture_url_screenshot(
+            target,
+            full_page=payload.full_page,
+            viewport_width=payload.viewport_width,
+            viewport_height=payload.viewport_height,
+        )
+    except Exception as e:
+        raise HTTPException(502, f"Screenshot capture failed: {e}")
+
+    # Normalize via PIL (resize if huge)
+    img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+    max_side = 1600
+    if max(img.size) > max_side:
+        ratio = max_side / max(img.size)
+        img = img.resize((int(img.size[0] * ratio), int(img.size[1] * ratio)))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=85)
+    b64 = base64.b64encode(buf.getvalue()).decode()
+
+    analysis = await analyze_screenshot(b64, payload.label or target)
+    analysis["_source_url"] = target
+    rec = await save_extraction("screenshot", analysis, label=payload.label or target)
+    return {
+        "id": rec.id,
+        "kind": "screenshot",
+        "data": analysis,
+        "preview_base64": b64,
+        "source_url": target,
+    }
+
+
+# ============ PROJECTS ============
+def _project_doc_to_out(doc: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": doc["id"],
+        "name": doc["name"],
+        "extraction_ids": doc.get("extraction_ids", []),
+        "dna_id": doc.get("dna_id"),
+        "created_at": doc.get("created_at"),
+        "updated_at": doc.get("updated_at"),
+    }
+
+
+@api_router.post("/projects")
+async def create_project(payload: ProjectCreateInput):
+    if not payload.name.strip():
+        raise HTTPException(400, "Project name required")
+    proj = Project(name=payload.name.strip())
+    await db.projects.insert_one(proj.model_dump())
+    return _project_doc_to_out(proj.model_dump())
+
+
+@api_router.get("/projects")
+async def list_projects():
+    docs = await db.projects.find({}, {"_id": 0}).sort("updated_at", -1).to_list(100)
+    return [_project_doc_to_out(d) for d in docs]
+
+
+@api_router.get("/projects/{pid}")
+async def get_project(pid: str):
+    doc = await db.projects.find_one({"id": pid}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Project not found")
+    # populate extractions + dna
+    ext_ids = doc.get("extraction_ids", [])
+    extractions: List[Dict[str, Any]] = []
+    if ext_ids:
+        async for e in db.extractions.find({"id": {"$in": ext_ids}}, {"_id": 0}):
+            extractions.append(e)
+        # preserve order per doc.extraction_ids
+        order = {eid: i for i, eid in enumerate(ext_ids)}
+        extractions.sort(key=lambda x: order.get(x["id"], 999))
+
+    dna = None
+    if doc.get("dna_id"):
+        dna = await db.extractions.find_one({"id": doc["dna_id"]}, {"_id": 0})
+
+    return {**_project_doc_to_out(doc), "extractions": extractions, "dna": dna}
+
+
+@api_router.patch("/projects/{pid}")
+async def update_project(pid: str, payload: ProjectUpdateInput):
+    doc = await db.projects.find_one({"id": pid}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Project not found")
+
+    ext_ids = list(doc.get("extraction_ids", []))
+    update: Dict[str, Any] = {"updated_at": datetime.now(timezone.utc).isoformat()}
+
+    if payload.name is not None and payload.name.strip():
+        update["name"] = payload.name.strip()
+
+    if payload.add_extraction_ids:
+        for x in payload.add_extraction_ids:
+            if x not in ext_ids:
+                ext_ids.append(x)
+    if payload.remove_extraction_ids:
+        ext_ids = [x for x in ext_ids if x not in payload.remove_extraction_ids]
+    if payload.add_extraction_ids or payload.remove_extraction_ids:
+        update["extraction_ids"] = ext_ids
+
+    if payload.dna_id is not None:
+        update["dna_id"] = payload.dna_id or None
+
+    await db.projects.update_one({"id": pid}, {"$set": update})
+    new_doc = await db.projects.find_one({"id": pid}, {"_id": 0})
+    return _project_doc_to_out(new_doc)
+
+
+@api_router.delete("/projects/{pid}")
+async def delete_project(pid: str):
+    res = await db.projects.delete_one({"id": pid})
+    return {"deleted": res.deleted_count}
+
+
+@api_router.post("/projects/{pid}/analyze-dna")
+async def analyze_project_dna(pid: str):
+    doc = await db.projects.find_one({"id": pid}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Project not found")
+    ext_ids = doc.get("extraction_ids", [])
+    if not ext_ids:
+        raise HTTPException(400, "Project has no extractions")
+
+    sources = []
+    async for e in db.extractions.find({"id": {"$in": ext_ids}}, {"_id": 0}):
+        if e["kind"] == "dna":
+            continue
+        sources.append({"kind": e["kind"], "label": e.get("label"), "data": e["data"]})
+    if not sources:
+        raise HTTPException(400, "No non-DNA sources to synthesize from")
+
+    dna = await synthesize_dna(sources, doc["name"])
+    rec = await save_extraction("dna", dna, label=f"DNA // {doc['name']}")
+    await db.projects.update_one(
+        {"id": pid},
+        {"$set": {"dna_id": rec.id, "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"id": rec.id, "kind": "dna", "data": dna, "project_id": pid, "source_count": len(sources)}
+
+
+# ============ DNA DIFF ============
+DIFF_SYSTEM_PROMPT = """You compare two design DNA reports and produce a structured, brutally honest diff.
+
+Return ONLY strict JSON (no prose/markdown) matching:
+{
+  "summary_one_liner": "...",
+  "overall_similarity": 0,
+  "color_diff": { "shared": ["#..."], "only_a": ["#..."], "only_b": ["#..."], "verdict": "..." },
+  "typography_diff": { "a_feel": "...", "b_feel": "...", "verdict": "..." },
+  "layout_diff": { "a": "...", "b": "...", "verdict": "..." },
+  "motion_diff": { "a": "...", "b": "...", "verdict": "..." },
+  "philosophy_diff": { "a": "...", "b": "...", "verdict": "..." },
+  "shared_signatures": ["..."],
+  "divergent_signatures": ["..."],
+  "merge_recommendation": "A concrete paragraph: how an AI agent could fuse both into a new distinctive system.",
+  "ai_slop_alignment": { "a_risk": "low|medium|high", "b_risk": "low|medium|high", "notes": "..." }
+}
+overall_similarity is 0-100.
+"""
+
+
+@api_router.post("/dna/diff")
+async def dna_diff(payload: DnaDiffInput):
+    a = await db.extractions.find_one({"id": payload.dna_a_id, "kind": "dna"}, {"_id": 0})
+    b = await db.extractions.find_one({"id": payload.dna_b_id, "kind": "dna"}, {"_id": 0})
+    if not a or not b:
+        raise HTTPException(404, "One or both DNA records not found")
+
+    chat = LlmChat(
+        api_key=EMERGENT_LLM_KEY,
+        session_id=f"diff-{uuid.uuid4()}",
+        system_message=DIFF_SYSTEM_PROMPT,
+    ).with_model("anthropic", "claude-sonnet-4-5-20250929")
+
+    body = {
+        "dna_a": {"label": a.get("label"), "data": a["data"]},
+        "dna_b": {"label": b.get("label"), "data": b["data"]},
+    }
+    msg = UserMessage(
+        text="Compare these two DNA reports. Return ONLY the JSON object.\n\n" + json.dumps(body)[:60000],
+    )
+    raw = await _llm_send_with_retry(chat, msg)
+    s = raw.strip()
+    if s.startswith("```"):
+        s = re.sub(r"^```(?:json)?\s*", "", s)
+        s = re.sub(r"\s*```$", "", s)
+    idx = s.find("{")
+    if idx > 0:
+        s = s[idx:]
+    try:
+        parsed = json.loads(s)
+    except Exception:
+        parsed = {"_parse_error": True, "raw": raw}
+
+    return {
+        "dna_a_id": payload.dna_a_id,
+        "dna_b_id": payload.dna_b_id,
+        "a_label": a.get("label"),
+        "b_label": b.get("label"),
+        "diff": parsed,
+    }
+
+
 app.include_router(api_router)
 app.add_middleware(
     CORSMiddleware,
@@ -538,6 +814,8 @@ async def startup_setup():
     try:
         await db.extractions.create_index("id", unique=True)
         await db.extractions.create_index("created_at")
+        await db.projects.create_index("id", unique=True)
+        await db.projects.create_index("updated_at")
     except Exception as e:
         logger.warning("Index creation skipped: %s", e)
 

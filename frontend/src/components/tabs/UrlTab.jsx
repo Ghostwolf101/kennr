@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { toast } from "sonner";
-import { Globe } from "@phosphor-icons/react";
+import { Globe, Camera } from "@phosphor-icons/react";
 import {
     BrutalCard,
     BrutalButton,
@@ -9,28 +9,42 @@ import {
     Overline,
     Tag,
 } from "../ui-brutal";
-import { extractUrl } from "@/lib/api";
+import { extractUrl, screenshotUrl } from "@/lib/api";
 
 export default function UrlTab({ onExtracted }) {
     const [url, setUrl] = useState("");
+    const [mode, setMode] = useState("html"); // html | screenshot
+    const [fullPage, setFullPage] = useState(true);
     const [loading, setLoading] = useState(false);
 
+    const normalizeUrl = (u) => {
+        let t = u.trim();
+        if (!t) return null;
+        if (!/^https?:\/\//i.test(t)) t = "https://" + t;
+        return t;
+    };
+
     const run = async () => {
-        if (!url.trim()) {
+        const target = normalizeUrl(url);
+        if (!target) {
             toast.error("Enter a URL");
             return;
         }
-        let target = url.trim();
-        if (!/^https?:\/\//i.test(target)) target = "https://" + target;
 
         setLoading(true);
         try {
-            const res = await extractUrl(target);
-            toast.success("URL fetched & parsed");
-            onExtracted(res);
+            if (mode === "html") {
+                const res = await extractUrl(target);
+                toast.success("URL fetched & parsed");
+                onExtracted(res);
+            } else {
+                const res = await screenshotUrl(target, fullPage, target);
+                toast.success("Screenshot captured & analyzed");
+                onExtracted(res);
+            }
         } catch (e) {
             toast.error(
-                e?.response?.data?.detail || "Fetch failed",
+                e?.response?.data?.detail || "Request failed",
             );
         } finally {
             setLoading(false);
@@ -52,6 +66,32 @@ export default function UrlTab({ onExtracted }) {
                 <Tag tone="secondary">D</Tag>
             </div>
 
+            <Overline className="mb-1">mode</Overline>
+            <div className="grid grid-cols-2 brutal-border mb-4">
+                <button
+                    onClick={() => setMode("html")}
+                    className={`p-3 font-mono text-[11px] uppercase tracking-wider flex items-center justify-center gap-2 brutal-border border-t-0 border-l-0 border-b-0 ${
+                        mode === "html"
+                            ? "bg-black text-white"
+                            : "bg-white hover:bg-[#F0F0F0]"
+                    }`}
+                    data-testid="url-mode-html"
+                >
+                    <Globe size={14} /> HTML parse
+                </button>
+                <button
+                    onClick={() => setMode("screenshot")}
+                    className={`p-3 font-mono text-[11px] uppercase tracking-wider flex items-center justify-center gap-2 brutal-border border-t-0 border-b-0 ${
+                        mode === "screenshot"
+                            ? "bg-black text-white"
+                            : "bg-white hover:bg-[#F0F0F0]"
+                    }`}
+                    data-testid="url-mode-screenshot"
+                >
+                    <Camera size={14} /> Auto-screenshot
+                </button>
+            </div>
+
             <Overline className="mb-1">url</Overline>
             <div className="flex gap-0">
                 <div className="bg-black text-white px-3 flex items-center brutal-border border-r-0 font-mono text-xs">
@@ -67,9 +107,25 @@ export default function UrlTab({ onExtracted }) {
                 />
             </div>
 
+            {mode === "screenshot" && (
+                <div className="mt-3">
+                    <label className="flex items-center gap-2 font-mono text-xs cursor-pointer">
+                        <input
+                            type="checkbox"
+                            checked={fullPage}
+                            onChange={(e) => setFullPage(e.target.checked)}
+                            className="brutal-border w-4 h-4"
+                            data-testid="url-fullpage-checkbox"
+                        />
+                        <span>full-page capture (scroll &amp; stitch)</span>
+                    </label>
+                </div>
+            )}
+
             <div className="mt-3 font-mono text-[11px] text-[#555]">
-                note: server-side fetch (no JS execution). for JS-rendered sites,
-                use the HTML tab with copied outerHTML.
+                {mode === "html"
+                    ? "server-side fetch (no JS execution)"
+                    : "playwright headless chrome → vision analysis via claude"}
             </div>
 
             <div className="mt-5 flex items-center gap-3">
@@ -80,7 +136,17 @@ export default function UrlTab({ onExtracted }) {
                     data-testid="extract-url-btn"
                 >
                     {loading ? (
-                        <BrutalLoader label="fetching" />
+                        <BrutalLoader
+                            label={
+                                mode === "screenshot"
+                                    ? "capturing"
+                                    : "fetching"
+                            }
+                        />
+                    ) : mode === "screenshot" ? (
+                        <>
+                            <Camera size={14} /> Capture &amp; analyze →
+                        </>
                     ) : (
                         "Fetch & extract →"
                     )}

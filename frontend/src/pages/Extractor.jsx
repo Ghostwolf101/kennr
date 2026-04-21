@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { toast } from "sonner";
 import {
     FileCode,
@@ -8,6 +8,7 @@ import {
     Dna,
     Download,
     Copy,
+    GitDiff,
 } from "@phosphor-icons/react";
 import Header from "@/components/Header";
 import ReactTab from "@/components/tabs/ReactTab";
@@ -15,6 +16,8 @@ import HtmlTab from "@/components/tabs/HtmlTab";
 import UrlTab from "@/components/tabs/UrlTab";
 import ScreenshotTab from "@/components/tabs/ScreenshotTab";
 import ExtractionCard from "@/components/ExtractionCard";
+import ProjectsBar from "@/components/ProjectsBar";
+import DnaDiff from "@/components/DnaDiff";
 import {
     BrutalCard,
     BrutalButton,
@@ -22,32 +25,74 @@ import {
     Overline,
     Tag,
 } from "@/components/ui-brutal";
-import { analyzeDna } from "@/lib/api";
+import { analyzeDna, updateProject, getProject } from "@/lib/api";
 
 const TABS = [
-    { id: "react", label: "React Source", icon: FileCode, accent: "#FF3B30" },
-    { id: "html", label: "Rendered HTML", icon: Browser, accent: "#FFDF00" },
-    { id: "screenshot", label: "Screenshot", icon: ImageIcon, accent: "#0A0A0A" },
-    { id: "url", label: "Live URL", icon: Globe, accent: "#002FA7" },
+    { id: "react", label: "React", icon: FileCode, accent: "#FF3B30" },
+    { id: "html", label: "HTML", icon: Browser, accent: "#FFDF00" },
+    { id: "screenshot", label: "Shot", icon: ImageIcon, accent: "#0A0A0A" },
+    { id: "url", label: "URL", icon: Globe, accent: "#002FA7" },
 ];
 
 export default function Extractor() {
     const [active, setActive] = useState("react");
-    const [extractions, setExtractions] = useState([]); // {id, kind, label, data}
+    const [extractions, setExtractions] = useState([]);
     const [dna, setDna] = useState(null);
     const [dnaLoading, setDnaLoading] = useState(false);
     const [projectName, setProjectName] = useState("");
+    const [activeProjectId, setActiveProjectId] = useState(null);
+    const [projectsVersion, setProjectsVersion] = useState(0);
+    const [showDiff, setShowDiff] = useState(false);
 
-    const add = (res) => {
-        setExtractions((prev) => [
-            {
-                id: res.id,
-                kind: res.kind,
-                label: deriveLabel(res),
-                data: res.data,
-            },
-            ...prev,
-        ]);
+    // When a project is selected, load its extractions
+    useEffect(() => {
+        if (!activeProjectId) return;
+        (async () => {
+            try {
+                const proj = await getProject(activeProjectId);
+                setProjectName(proj.name);
+                setExtractions(
+                    (proj.extractions || []).map((e) => ({
+                        id: e.id,
+                        kind: e.kind,
+                        label: e.label || e.id.slice(0, 8),
+                        data: e.data,
+                    })),
+                );
+                setDna(
+                    proj.dna
+                        ? {
+                              id: proj.dna.id,
+                              kind: "dna",
+                              label: proj.dna.label || proj.name,
+                              data: proj.dna.data,
+                          }
+                        : null,
+                );
+            } catch (e) {
+                toast.error("Failed to load project");
+            }
+        })();
+    }, [activeProjectId]);
+
+    const add = async (res) => {
+        const rec = {
+            id: res.id,
+            kind: res.kind,
+            label: deriveLabel(res),
+            data: res.data,
+        };
+        setExtractions((prev) => [rec, ...prev]);
+        if (activeProjectId) {
+            try {
+                await updateProject(activeProjectId, {
+                    add_extraction_ids: [res.id],
+                });
+                setProjectsVersion((v) => v + 1);
+            } catch (e) {
+                // non-fatal
+            }
+        }
     };
 
     const deriveLabel = (res) => {
@@ -56,7 +101,11 @@ export default function Extractor() {
         if (res.kind === "html" || res.kind === "url")
             return res.data.title || res.data.source_url || "html";
         if (res.kind === "screenshot")
-            return res.data.aesthetic?.mood || "vision analysis";
+            return (
+                res.source_url ||
+                res.data?.aesthetic?.mood ||
+                "vision analysis"
+            );
         return res.id.slice(0, 8);
     };
 
@@ -76,12 +125,23 @@ export default function Extractor() {
                 nonDna.map((e) => e.id),
                 projectName || "Untitled Project",
             );
-            setDna({
+            const dnaRec = {
                 id: res.id,
                 kind: "dna",
                 label: projectName || "Design DNA",
                 data: res.data,
-            });
+            };
+            setDna(dnaRec);
+            if (activeProjectId) {
+                try {
+                    await updateProject(activeProjectId, {
+                        dna_id: res.id,
+                    });
+                    setProjectsVersion((v) => v + 1);
+                } catch (e) {
+                    // non-fatal
+                }
+            }
             toast.success("Design DNA synthesized");
         } catch (e) {
             toast.error(
@@ -89,6 +149,20 @@ export default function Extractor() {
             );
         } finally {
             setDnaLoading(false);
+        }
+    };
+
+    const removeExtraction = async (id) => {
+        setExtractions((prev) => prev.filter((x) => x.id !== id));
+        if (activeProjectId) {
+            try {
+                await updateProject(activeProjectId, {
+                    remove_extraction_ids: [id],
+                });
+                setProjectsVersion((v) => v + 1);
+            } catch (e) {
+                // non-fatal
+            }
         }
     };
 
@@ -127,6 +201,17 @@ export default function Extractor() {
         toast.success("Bundle copied");
     };
 
+    const selectProject = (id) => {
+        if (id === null) {
+            setActiveProjectId(null);
+            setExtractions([]);
+            setDna(null);
+            setProjectName("");
+            return;
+        }
+        setActiveProjectId(id);
+    };
+
     return (
         <div
             className="min-h-screen bg-white"
@@ -156,12 +241,15 @@ export default function Extractor() {
                             Feed it React source, rendered HTML, URLs or
                             screenshots. Get structured design DNA any AI
                             coding agent can paste directly into its prompt —
-                            and build something that <em>doesn&apos;t look AI-generated</em>.
+                            and build something that{" "}
+                            <em>doesn&apos;t look AI-generated</em>.
                         </p>
                     </div>
                     <div className="md:col-span-4">
                         <BrutalCard className="p-4">
-                            <Overline className="mb-2">project name</Overline>
+                            <Overline className="mb-2">
+                                {activeProjectId ? "project" : "project name"}
+                            </Overline>
                             <input
                                 type="text"
                                 value={projectName}
@@ -170,17 +258,23 @@ export default function Extractor() {
                                 className="w-full brutal-border px-3 py-2 font-mono text-sm focus:outline-none focus:border-[#FF3B30]"
                                 data-testid="project-name-input"
                             />
-                            <div className="mt-3 grid grid-cols-2 gap-0 brutal-border">
+                            <div className="mt-3 grid grid-cols-3 gap-0 brutal-border">
                                 <div className="brutal-border border-t-0 border-l-0 p-2">
                                     <Overline>inputs</Overline>
                                     <div className="font-display font-black text-xl">
                                         {extractions.length}
                                     </div>
                                 </div>
-                                <div className="p-2">
+                                <div className="brutal-border border-t-0 border-l-0 p-2">
                                     <Overline>dna</Overline>
                                     <div className="font-display font-black text-xl">
-                                        {dna ? "READY" : "—"}
+                                        {dna ? "✓" : "—"}
+                                    </div>
+                                </div>
+                                <div className="p-2">
+                                    <Overline>project</Overline>
+                                    <div className="font-display font-black text-xl truncate">
+                                        {activeProjectId ? "●" : "—"}
                                     </div>
                                 </div>
                             </div>
@@ -191,52 +285,77 @@ export default function Extractor() {
 
             {/* MAIN GRID */}
             <section className="grid grid-cols-1 lg:grid-cols-12">
-                {/* LEFT: INPUTS */}
-                <div className="lg:col-span-5 xl:col-span-4 brutal-border border-t-0 border-l-0 border-b-0 p-4 md:p-6">
-                    <Overline className="mb-3">01 · inputs</Overline>
-
-                    <div className="brutal-border mb-4 grid grid-cols-4">
-                        {TABS.map((t) => {
-                            const Icon = t.icon;
-                            const isActive = active === t.id;
-                            return (
-                                <button
-                                    key={t.id}
-                                    onClick={() => setActive(t.id)}
-                                    className={`p-3 brutal-border border-t-0 border-l-0 last:border-r-0 font-mono text-[10px] uppercase tracking-wider flex flex-col items-center gap-1 transition-colors ${
-                                        isActive
-                                            ? "bg-black text-white"
-                                            : "bg-white hover:bg-[#F0F0F0]"
-                                    }`}
-                                    style={
-                                        isActive
-                                            ? { borderBottomColor: t.accent, borderBottomWidth: 4 }
-                                            : undefined
-                                    }
-                                    data-testid={`tab-${t.id}`}
-                                >
-                                    <Icon size={18} />
-                                    <span className="hidden sm:inline">
-                                        {t.label}
-                                    </span>
-                                </button>
-                            );
-                        })}
+                {/* LEFT: INPUTS + PROJECTS */}
+                <div className="lg:col-span-5 xl:col-span-4 brutal-border border-t-0 border-l-0 border-b-0 p-4 md:p-6 space-y-6">
+                    <div>
+                        <Overline className="mb-3">00 · projects</Overline>
+                        <ProjectsBar
+                            key={projectsVersion}
+                            activeProjectId={activeProjectId}
+                            onSelect={selectProject}
+                            onProjectChanged={() =>
+                                setProjectsVersion((v) => v + 1)
+                            }
+                            onDnaSynthesized={(res) => {
+                                const dnaRec = {
+                                    id: res.id,
+                                    kind: "dna",
+                                    label:
+                                        extractions[0]?.label ||
+                                        "Project DNA",
+                                    data: res.data,
+                                };
+                                setDna(dnaRec);
+                            }}
+                            extractionCount={extractions.length}
+                        />
                     </div>
 
                     <div>
-                        {active === "react" && <ReactTab onExtracted={add} />}
-                        {active === "html" && <HtmlTab onExtracted={add} />}
-                        {active === "screenshot" && (
-                            <ScreenshotTab onExtracted={add} />
-                        )}
-                        {active === "url" && <UrlTab onExtracted={add} />}
+                        <Overline className="mb-3">01 · inputs</Overline>
+                        <div className="brutal-border mb-4 grid grid-cols-4">
+                            {TABS.map((t) => {
+                                const Icon = t.icon;
+                                const isActive = active === t.id;
+                                return (
+                                    <button
+                                        key={t.id}
+                                        onClick={() => setActive(t.id)}
+                                        className={`p-3 brutal-border border-t-0 border-l-0 last:border-r-0 font-mono text-[10px] uppercase tracking-wider flex flex-col items-center gap-1 transition-colors ${
+                                            isActive
+                                                ? "bg-black text-white"
+                                                : "bg-white hover:bg-[#F0F0F0]"
+                                        }`}
+                                        style={
+                                            isActive
+                                                ? {
+                                                      borderBottomColor:
+                                                          t.accent,
+                                                      borderBottomWidth: 4,
+                                                  }
+                                                : undefined
+                                        }
+                                        data-testid={`tab-${t.id}`}
+                                    >
+                                        <Icon size={18} />
+                                        <span>{t.label}</span>
+                                    </button>
+                                );
+                            })}
+                        </div>
+
+                        <div>
+                            {active === "react" && <ReactTab onExtracted={add} />}
+                            {active === "html" && <HtmlTab onExtracted={add} />}
+                            {active === "screenshot" && (
+                                <ScreenshotTab onExtracted={add} />
+                            )}
+                            {active === "url" && <UrlTab onExtracted={add} />}
+                        </div>
                     </div>
 
-                    <div className="mt-6">
-                        <Overline className="mb-2">
-                            02 · synthesis
-                        </Overline>
+                    <div>
+                        <Overline className="mb-2">02 · synthesis</Overline>
                         <BrutalCard className="p-4">
                             <div className="flex items-center gap-2 mb-3">
                                 <Dna size={18} />
@@ -249,8 +368,7 @@ export default function Extractor() {
                             </div>
                             <p className="font-mono text-[11px] text-[#555] leading-relaxed mb-3">
                                 Combines all {nonDna.length} extraction(s) into
-                                one comprehensive AI-ready brief with ready-to-paste
-                                prompt &amp; markdown.
+                                one comprehensive AI-ready brief.
                             </p>
                             <BrutalButton
                                 variant="accent"
@@ -270,8 +388,32 @@ export default function Extractor() {
                         </BrutalCard>
                     </div>
 
-                    <div className="mt-6">
-                        <Overline className="mb-2">03 · export</Overline>
+                    <div>
+                        <Overline className="mb-2">03 · compare</Overline>
+                        <BrutalCard className="p-4">
+                            <div className="flex items-center gap-2 mb-3">
+                                <GitDiff size={18} />
+                                <h3
+                                    className="font-display font-black text-lg"
+                                    style={{ letterSpacing: "-0.02em" }}
+                                >
+                                    DIFF TWO DNAs
+                                </h3>
+                            </div>
+                            <BrutalButton
+                                variant="secondary"
+                                onClick={() => setShowDiff((s) => !s)}
+                                className="w-full"
+                                data-testid="open-diff-btn"
+                            >
+                                <GitDiff size={14} />
+                                {showDiff ? "Hide diff panel" : "Open diff panel"}
+                            </BrutalButton>
+                        </BrutalCard>
+                    </div>
+
+                    <div>
+                        <Overline className="mb-2">04 · export</Overline>
                         <div className="grid grid-cols-2 gap-0 brutal-border">
                             <button
                                 onClick={exportAll}
@@ -294,42 +436,36 @@ export default function Extractor() {
                 </div>
 
                 {/* RIGHT: RESULTS */}
-                <div className="lg:col-span-7 xl:col-span-8 p-4 md:p-6 bg-[#FAFAFA]">
-                    <div className="flex items-center justify-between mb-3">
-                        <Overline>04 · extracted data</Overline>
+                <div className="lg:col-span-7 xl:col-span-8 p-4 md:p-6 bg-[#FAFAFA] space-y-4">
+                    {showDiff && <DnaDiff onClose={() => setShowDiff(false)} />}
+
+                    <div className="flex items-center justify-between">
+                        <Overline>05 · extracted data</Overline>
                         <Tag tone="black">
                             {extractions.length + (dna ? 1 : 0)} total
                         </Tag>
                     </div>
 
                     {dna && (
-                        <div className="mb-4">
-                            <ExtractionCard
-                                record={dna}
-                                index="dna"
-                                onRemove={() => setDna(null)}
-                            />
-                        </div>
+                        <ExtractionCard
+                            record={dna}
+                            index="dna"
+                            onRemove={() => setDna(null)}
+                        />
                     )}
 
-                    {extractions.length === 0 && !dna ? (
+                    {extractions.length === 0 && !dna && !showDiff ? (
                         <EmptyState />
                     ) : (
-                        <div className="space-y-4">
-                            {extractions.map((e, i) => (
-                                <ExtractionCard
-                                    key={e.id}
-                                    record={e}
-                                    index={i}
-                                    defaultOpen={i === 0}
-                                    onRemove={() =>
-                                        setExtractions((prev) =>
-                                            prev.filter((x) => x.id !== e.id),
-                                        )
-                                    }
-                                />
-                            ))}
-                        </div>
+                        extractions.map((e, i) => (
+                            <ExtractionCard
+                                key={e.id}
+                                record={e}
+                                index={i}
+                                defaultOpen={i === 0}
+                                onRemove={() => removeExtraction(e.id)}
+                            />
+                        ))
                     )}
                 </div>
             </section>
@@ -359,9 +495,7 @@ function EmptyState() {
             className="p-8 text-center"
             data-testid="empty-state"
         >
-            <div
-                className="mx-auto mb-4 w-20 h-20 brutal-border grid-lines grid-shift"
-            />
+            <div className="mx-auto mb-4 w-20 h-20 brutal-border grid-lines grid-shift" />
             <h3
                 className="font-display font-black text-2xl md:text-3xl leading-tight"
                 style={{ letterSpacing: "-0.03em" }}
@@ -369,9 +503,9 @@ function EmptyState() {
                 NO EXTRACTIONS YET
             </h3>
             <p className="mt-2 font-mono text-xs text-[#555] max-w-md mx-auto leading-relaxed">
-                Pick an input on the left. The more you feed it, the better the
-                design DNA synthesis gets. Screenshots unlock vision analysis;
-                source files unlock structural diffs.
+                Pick an input on the left. Screenshots unlock vision analysis;
+                source files unlock structural diffs. Group extractions into a
+                project to compare DNAs later.
             </p>
             <div className="mt-5 flex justify-center flex-wrap gap-2">
                 <Tag tone="primary">A · REACT</Tag>

@@ -1,0 +1,58 @@
+{
+  "summary": "Iteration 2 backend-only testing of NEW endpoints: POST /api/screenshot/url (Playwright + Claude vision), Projects CRUD, POST /api/projects/{pid}/analyze-dna, POST /api/dna/diff. All 17 targeted tests passed (17/17, 170s). Playwright Chromium launches cleanly from /pw-browsers, URL auto-prefix works, PIL normalization to 1600px JPEG + vision analysis returns full schema (aesthetic/color_palette/typography/layout/ai_prompt_brief). Project CRUD preserves extraction_ids order on add/remove, no duplicate-add, name trim/rename, proper 404s. /projects/{pid}/analyze-dna synthesizes DNA, writes dna_id to project, excludes kind='dna' from sources. /dna/diff validates kind='dna' on BOTH ids (404 if either is non-DNA or missing), returns full 11-key diff schema incl. overall_similarity 0-100. Iteration-1 hot issue fixed: _llm_send_with_retry() now maps Emergent LLM errors to 402 (budget) or 502 (transient) instead of raw 500 — observed zero 500s during 3 real LLM runs. No MongoDB _id leaks anywhere (projects, populated extractions, dna object). Indexes created on startup (extractions.id unique, projects.id unique, projects.updated_at).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/screenshot/url",
+        "issue": "Any Playwright failure (nav timeout, DNS, TLS, JS crash) is swallowed into a generic HTTPException(502, 'Screenshot capture failed: {e}'). Distinct cases (DNS fail vs navigation timeout vs TLS) are indistinguishable to the client. Consider mapping DNS/NXDOMAIN → 400 and nav/timeout → 504."
+      },
+      {
+        "endpoint": "POST /api/screenshot/url",
+        "issue": "No URL allowlist / SSRF protection. Accepts any http(s) URL including 127.0.0.1, 169.254.169.254 (cloud metadata), internal k8s services. Browser launched with --no-sandbox so it can reach cluster-internal services. Add a hostname resolver check to block RFC1918/loopback/link-local before launching Chromium."
+      },
+      {
+        "endpoint": "PATCH /api/projects/{pid}",
+        "issue": "Silent no-op when name is provided but empty/whitespace — only updated_at changes. Should either 400 on blank name or keep previous name explicitly. Currently the updated_at still bumps which can be confusing for clients relying on updated_at ordering."
+      },
+      {
+        "endpoint": "DELETE /api/projects/{pid}",
+        "issue": "Does not cascade-delete the synthesized DNA extraction (project.dna_id) nor detach from extractions. Returns {deleted: 0} silently for unknown ids (no 404), which is inconsistent with other endpoints. Acceptable for MVP but worth aligning with GET/PATCH 404 semantics."
+      },
+      {
+        "endpoint": "POST /api/dna/diff",
+        "issue": "payload JSON truncated at 60000 chars with .json.dumps(body)[:60000] — if either DNA body is large this cuts mid-structure producing invalid JSON inside the prompt. Same pattern already flagged in synthesize_dna (iter-1). Consider per-field truncation."
+      }
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_projects_and_screenshot.py",
+    "/app/backend/tests/test_extractor_api.py",
+    "/app/test_reports/pytest/iteration_2.xml"
+  ],
+  "action_items": [
+    "[P2] Add SSRF guard in /api/screenshot/url — reject private/loopback/link-local hosts before spawning Chromium.",
+    "[P3] /api/dna/diff: trim per-field instead of raw [:60000] truncate of json.dumps(body) to avoid sending malformed JSON to the LLM when DNA records are large.",
+    "[P3] DELETE /api/projects/{pid} should 404 for unknown ids and/or cascade-delete the associated DNA extraction.",
+    "[P3] PATCH /api/projects/{pid}: reject blank name with 400 (currently silently no-ops while still bumping updated_at)."
+  ],
+  "critical_code_review_comments": [
+    "server.py:330 _llm_send_with_retry — name says 'with_retry' but attempts=1 and no retry loop exists. Either rename to _llm_send_with_error_mapping or actually implement retries for 502/overloaded. iter-1 flakiness would benefit from 1-2 internal retries with 1-2s backoff.",
+    "server.py:561 capture_url_screenshot — launches Chromium for EVERY request (no browser pool). 5-10s cold-start overhead per call; for bursty traffic consider a lazy singleton playwright/browser that is reused and only recycled every N requests.",
+    "server.py:690-697 update_project — add_extraction_ids does not validate that the referenced extraction ids exist in db.extractions; a client can attach ghost ids and they'll just be ignored on GET populate. Minor UX bug.",
+    "server.py:778 dna_diff — same 60000-char raw-truncate issue as synthesize_dna; see minor issue.",
+    "server.py:802+ app.include_router is called after route definitions — fine — but CORS middleware is added AFTER include_router; starlette handles this ok but conventional order is middleware first.",
+    "No rate limit / auth on any endpoint. /screenshot/url + /analyze-dna + /dna/diff all invoke LLM & headless browser — trivial to burn budget. Add a simple per-IP limiter or require a client token before public exposure.",
+    "server.py:731 project analyze-dna — on DNA synth parse_error the record is still saved as kind='dna' and project.dna_id is set. Consumers of GET /projects/{pid} will see dna.data._parse_error=true; consider bubbling this up as a field in the response so clients can show a retry button without needing to inspect data.",
+    "No global @app.exception_handler(Exception) (flagged in iter-1, still missing) — any unexpected error returns a raw 500 with no JSON body."
+  ],
+  "updated_files": ["/app/backend/tests/test_projects_and_screenshot.py"],
+  "success_rate": {"backend": "100% (17/17 new endpoint tests + iter-1 suite still passing; LLM calls clean on all 3 attempts this run)"},
+  "test_credentials": "N/A (no auth on endpoints — see security note in critical comments)",
+  "seed_data_creation": "Test file creates extractions with TEST_-labeled projects ('TEST_Project_Alpha', 'TEST_Project_Populate', 'TEST_Project_Order(_Renamed)', 'TEST_ToDelete', 'TEST_DNA_ProjA', 'TEST_DNA_ProjB', 'TEST_EmptyDNA') and several react extractions. Session-scope cleanup deletes all created projects and extractions; a few orphan extractions tied to auto-DNA labels 'DNA // TEST_DNA_ProjA/B' may persist if the DELETE /projects/{pid} step runs before the DELETE /extractions — manual cleanup possible via Mongo kind='dna' + label LIKE 'DNA // TEST_%'.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run: cd /app && python -m pytest backend/tests/test_projects_and_screenshot.py backend/tests/test_extractor_api.py -v -p no:randomly --junitxml=/app/test_reports/pytest/iteration_N.xml. LLM-dependent tests (test_project_analyze_dna, test_dna_diff_success) use pytest.skip on 402 (budget) and 2x retry on 502. Playwright works out of the box via PLAYWRIGHT_BROWSERS_PATH=/pw-browsers; a single capture+vision takes ~25-35s. Iteration-1 DNA 500 issue is FIXED — _llm_send_with_retry at server.py:330 maps ChatError to 402 or 502 instead. All 17/17 iteration-2 tests passed clean on first run. No MongoDB _id leaks anywhere verified in all project-related responses (create/list/get/patch) and in populated extractions/dna sub-objects.",
+  "rca of the issue": "No open bugs from iteration 2 — all 17 new-endpoint tests passed. Minor issues (SSRF, cascade delete, truncation) are enhancements, not bugs."
+}
