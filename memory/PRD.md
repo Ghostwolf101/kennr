@@ -10,48 +10,64 @@ Output must be consumable by other AI programs to help with web development and 
 User choice: **Go wild, make it comprehensive and AI-readable.**
 
 ## Architecture
-- **Backend**: FastAPI (Python) at `/api/*` on port 8001
-- **Frontend**: React 19 + React Router + Tailwind + Shadcn-ish primitives, brutalist styling (Cabinet Grotesk + IBM Plex Mono)
-- **DB**: MongoDB (motor async) — collection `extractions` with unique index on `id`
-- **LLM**: Claude Sonnet 4.5 (`claude-sonnet-4-5-20250929`) via `emergentintegrations` (Emergent Universal LLM Key)
-  - Vision: screenshot → JSON aesthetic report
-  - Text: DNA synthesis combining all extractions → ready-to-paste AI prompt
+- **Backend**: FastAPI + Motor (async Mongo), Playwright (headless Chromium) @ /pw-browsers
+- **Frontend**: React 19 + React Router + Tailwind, custom Brutalist primitives
+- **LLM**: Claude Sonnet 4.5 (`claude-sonnet-4-5-20250929`) via `emergentintegrations` + Emergent Universal LLM Key
+- **Collections**: `extractions`, `projects` (both indexed on `id`)
 
-## Core Endpoints (all /api)
-- `POST /extract/react` — parse .js/.jsx/.tsx files
-- `POST /extract/html` — parse pasted outerHTML
-- `POST /extract/url` — fetch URL and parse (httpx, no JS execution)
-- `POST /extract/screenshot` — Claude vision analysis of image (PNG/JPG/WEBP)
-- `POST /analyze/dna` — combine saved extractions → rich design DNA
+## Endpoints (all /api)
+### Extraction
+- `POST /extract/react` — parse .js/.jsx/.tsx
+- `POST /extract/html` — parse outerHTML
+- `POST /extract/url` — httpx fetch + parse
+- `POST /extract/screenshot` — upload image → Claude vision
+- `POST /screenshot/url` ✨ **NEW** — Playwright capture URL → Claude vision
+- `POST /analyze/dna` — combine extractions → DNA
+
+### Projects ✨ **NEW**
+- `POST /projects` — create
+- `GET /projects` / `GET /projects/{id}` — list / populated get
+- `PATCH /projects/{id}` — rename, add/remove extractions, set dna_id
+- `DELETE /projects/{id}`
+- `POST /projects/{id}/analyze-dna` — scoped DNA synthesis
+
+### Diff ✨ **NEW**
+- `POST /dna/diff` — Claude-powered structured diff between two DNA records
+
+### CRUD
 - `GET /extractions`, `GET /extractions/{id}`, `DELETE /extractions/{id}`
 
 ## Implemented (2026-04-21)
-- Full extractor pipeline: React AST-lite + HTML BeautifulSoup + URL fetch + vision analysis + DNA synthesis
-- Brutalist dashboard UI with tabs (React / HTML / Screenshot / URL)
-- Per-extraction cards with Copy/Download JSON
-- Bundle export (single JSON containing all extractions + DNA)
-- Neo-brutalist styling (stark white/black, signal red, yellow accent, monospace)
-- Error handling: 402 for LLM budget exceeded, 502 for upstream LLM unavailable
+### Iteration 1
+- Full extractor pipeline (React parser, HTML parser, URL fetch, vision, DNA synth)
+- Brutalist dashboard UI (Cabinet Grotesk + IBM Plex Mono, signal red / yellow accents)
+- Per-extraction cards with Copy/Download JSON + bundle export
+- Error handling: HTTP 402 (LLM budget) / 502 (upstream) instead of raw 500
 - MongoDB indexes on startup
 
-## Known Limitations
-- LLM-dependent endpoints (screenshot, DNA) require healthy Emergent LLM key with budget
-- URL extraction does not execute JS (use HTML paste for JS-rendered sites)
-- DNA synthesis may take 15–60s depending on upstream latency
+### Iteration 2 ✨
+- **Playwright auto-screenshot** of URLs (headless Chromium, full-page support, vision analysis)
+- **Projects system** (create/rename/delete, auto-attach extractions when a project is active)
+- **Project-scoped DNA synthesis** (dedicated endpoint stores dna_id on project)
+- **DNA Diff** with side-by-side colors / typography / layout / motion / philosophy + merge recommendation
+- UrlTab toggles between HTML-parse and auto-Screenshot modes
+- ProjectsBar sidebar with inline rename & counters
+
+## Known Limitations / Deferred
+- No SSRF guard on /screenshot/url (P2 — block loopback/RFC1918)
+- No browser pool — each screenshot spawns fresh Chromium (~5-10s cold start)
+- No rate-limit / auth (P2 — public endpoints)
+- DNA diff truncates JSON payload at 60000 chars raw (P3 — per-field truncate)
+- DELETE /projects doesn't cascade to DNA extraction (P3)
 
 ## User Personas
-- **AI-assisted developers** using Cursor/Claude/Copilot who want to recreate visual styles
-- **Designers** auditing existing sites for design tokens
-- **Students/Learners** studying what makes a design distinctive
+- AI-assisted devs (Cursor/Claude/Copilot) recreating visual styles
+- Designers auditing sites for design tokens
+- Students studying what makes a design distinctive
 
-## Backlog (P1/P2)
-- P1: Playwright-based server-side screenshot of a URL (auto-capture)
-- P1: Diff view between two DNA reports
-- P1: Save projects (group extractions under a project)
-- P2: Figma-style token export (CSS vars, Tailwind config)
-- P2: Chrome extension to capture outerHTML + screenshot in one click
-- P2: Share a public DNA link
-
-## Next Action Items
-- Top up Emergent LLM key when budget runs out (Profile → Universal Key → Add Balance)
-- Consider adding API key input in the UI for users who want their own LLM key
+## Backlog
+- P2: SSRF allowlist + per-IP rate limit
+- P2: Browser pool for screenshot endpoint
+- P2: Figma-style token export (CSS vars / Tailwind config)
+- P3: Chrome extension for one-click capture
+- P3: Shareable public DNA links
