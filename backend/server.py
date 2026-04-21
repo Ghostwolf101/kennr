@@ -293,6 +293,22 @@ Return this exact schema:
 """
 
 
+async def _llm_send_with_retry(chat: LlmChat, msg: UserMessage, attempts: int = 1) -> str:
+    """Send LLM message with error handling. Relies on litellm's internal retries.
+    attempts=1 keeps total time bounded under typical edge timeouts."""
+    try:
+        return await chat.send_message(msg)
+    except Exception as e:
+        err = str(e)
+        logger.warning("LLM call failed: %s", err)
+        if "Budget has been exceeded" in err or "budget" in err.lower():
+            raise HTTPException(
+                status_code=402,
+                detail="Emergent LLM Key budget exceeded. Please top up in Profile → Universal Key → Add Balance.",
+            )
+        raise HTTPException(status_code=502, detail=f"Upstream LLM unavailable: {err[:200]}")
+
+
 async def analyze_screenshot(image_b64: str, label: Optional[str] = None) -> Dict[str, Any]:
     if not EMERGENT_LLM_KEY:
         raise HTTPException(500, "EMERGENT_LLM_KEY not configured")
@@ -307,7 +323,7 @@ async def analyze_screenshot(image_b64: str, label: Optional[str] = None) -> Dic
         text=f"Analyze this screenshot{(' (label: ' + label + ')') if label else ''}. Return ONLY the JSON object defined in the system prompt. No prose.",
         file_contents=[ImageContent(image_base64=image_b64)],
     )
-    raw = await chat.send_message(msg)
+    raw = await _llm_send_with_retry(chat, msg)
 
     # strip accidental fences
     s = raw.strip()
@@ -373,10 +389,25 @@ async def synthesize_dna(sources: List[Dict[str, Any]], project_name: str) -> Di
     ).with_model("anthropic", "claude-sonnet-4-5-20250929")
 
     payload = {"project_name": project_name, "sources": sources}
+    # truncate oversized payloads safely (per-source)
+    payload_str = json.dumps(payload)
+    if len(payload_str) > 60000:
+        trimmed_sources = []
+        for s in sources:
+            data = s.get("data", {})
+            # keep small top-level only if large
+            data_str = json.dumps(data)
+            if len(data_str) > 12000:
+                # keep a condensed summary
+                data = {k: v for k, v in data.items() if isinstance(v, (str, int, float, bool)) or (isinstance(v, (list, dict)) and len(json.dumps(v)) < 4000)}
+            trimmed_sources.append({"kind": s["kind"], "label": s.get("label"), "data": data})
+        payload = {"project_name": project_name, "sources": trimmed_sources}
+        payload_str = json.dumps(payload)
+
     msg = UserMessage(
-        text="Synthesize design DNA from the following extractions. Return ONLY the JSON object.\n\n" + json.dumps(payload)[:60000],
+        text="Synthesize design DNA from the following extractions. Return ONLY the JSON object.\n\n" + payload_str,
     )
-    raw = await chat.send_message(msg)
+    raw = await _llm_send_with_retry(chat, msg)
     s = raw.strip()
     if s.startswith("```"):
         s = re.sub(r"^```(?:json)?\s*", "", s)
@@ -500,6 +531,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+async def startup_setup():
+    try:
+        await db.extractions.create_index("id", unique=True)
+        await db.extractions.create_index("created_at")
+    except Exception as e:
+        logger.warning("Index creation skipped: %s", e)
 
 
 @app.on_event("shutdown")
