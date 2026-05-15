@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=1280"/>
+<title>Kennr — Screenshot Mockup</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    width: 1280px;
+    height: 800px;
+    background: #1a1a2e;
+    font-family: 'IBM Plex Mono', monospace;
+    display: flex;
+    overflow: hidden;
+  }
+
+  /* Fake browser chrome */
+  .browser {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    background: #242424;
+  }
+  .browser-bar {
+    height: 52px;
+    background: #2d2d2d;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 16px;
+    border-bottom: 1px solid #3a3a3a;
+    flex-shrink: 0;
+  }
+  .dots { display: flex; gap: 6px; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; }
+  .dot.r { background: #ff5f57; }
+  .dot.y { background: #febc2e; }
+  .dot.g { background: #28c840; }
+  .address-bar {
+    flex: 1;
+    background: #3a3a3a;
+    border-radius: 6px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    color: #aaa;
+    gap: 8px;
+  }
+  .lock { color: #4caf50; font-size: 11px; }
+  .ext-icon {
+    width: 28px; height: 28px;
+    background: #080709;
+    border-radius: 4px;
+    display: flex; align-items: center; justify-content: center;
+    color: #daa040;
+    font-size: 15px;
+    border: 1px solid #7a5418;
+    cursor: pointer;
+  }
+
+  /* Fake webpage content */
+  .webpage {
+    flex: 1;
+    background: #f8f8f8;
+    position: relative;
+    overflow: hidden;
+  }
+  .fake-nav {
+    height: 60px;
+    background: #0f172a;
+    display: flex;
+    align-items: center;
+    padding: 0 40px;
+    gap: 32px;
+  }
+  .fake-logo { width: 100px; height: 20px; background: #3b82f6; border-radius: 3px; }
+  .fake-link { width: 60px; height: 12px; background: #334155; border-radius: 2px; }
+  .fake-hero {
+    height: 240px;
+    background: linear-gradient(135deg, #1e3a5f 0%, #0f172a 100%);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px;
+  }
+  .fake-h1 { width: 340px; height: 32px; background: rgba(255,255,255,0.2); border-radius: 4px; }
+  .fake-sub { width: 220px; height: 16px; background: rgba(255,255,255,0.12); border-radius: 3px; }
+  .fake-cta { width: 120px; height: 36px; background: #3b82f6; border-radius: 4px; }
+  .fake-body {
+    padding: 32px 40px;
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 20px;
+  }
+  .fake-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; }
+  .fake-card-h { width: 80%; height: 14px; background: #e2e8f0; border-radius: 3px; margin-bottom: 10px; }
+  .fake-card-p { width: 100%; height: 10px; background: #f1f5f9; border-radius: 2px; margin-bottom: 6px; }
+
+  /* Popup overlay */
+  .popup-wrap {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+  }
+  .popup {
+    width: 340px;
+    background: #fff;
+    border: 2px solid #0a0a0a;
+    box-shadow: 8px 8px 0 0 rgba(0,0,0,0.3);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+  }
+  .popup-header {
+    background: #0a0a0a;
+    color: #fff;
+    padding: 10px 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .popup-logo {
+    width: 24px; height: 24px;
+    background: #daa040;
+    display: flex; align-items: center; justify-content: center;
+    color: #0a0a0a;
+    font-size: 14px;
+    font-weight: 900;
+  }
+  .popup-title { font-weight: 900; font-size: 15px; letter-spacing: -0.02em; }
+  .popup-ver { margin-left: auto; font-size: 10px; opacity: 0.6; text-transform: uppercase; letter-spacing: 0.1em; }
+  .popup-body { padding: 14px; }
+  .overline { font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em; color: #555; margin-bottom: 4px; }
+  .current-tab {
+    border: 2px solid #0a0a0a;
+    background: #f5f5f5;
+    padding: 8px;
+    margin-bottom: 12px;
+  }
+  .tab-title { font-weight: 800; font-size: 12px; margin-bottom: 2px; }
+  .tab-url { font-size: 10px; color: #555; word-break: break-all; }
+  .input-wrap { margin-bottom: 12px; }
+  .fake-input {
+    width: 100%;
+    border: 2px solid #0a0a0a;
+    padding: 8px 10px;
+    font-size: 11px;
+    font-family: 'IBM Plex Mono', monospace;
+    color: #555;
+    background: #fff;
+  }
+  .btn-row { display: flex; flex-direction: column; gap: 8px; }
+  .btn {
+    width: 100%;
+    border: 2px solid #0a0a0a;
+    padding: 10px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    text-align: center;
+    box-shadow: 4px 4px 0 0 #0a0a0a;
+  }
+  .btn-primary { background: #ff3b30; color: #fff; }
+  .btn-accent { background: #daa040; color: #0a0a0a; }
+  .btn-default { background: #0a0a0a; color: #fff; }
+  .status-ok {
+    margin-top: 10px;
+    background: #daa040;
+    border: 2px solid #0a0a0a;
+    padding: 8px;
+    font-size: 11px;
+    color: #0a0a0a;
+  }
+
+  /* Label strip at bottom */
+  .label-strip {
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 48px;
+    background: rgba(8,7,9,0.92);
+    display: flex; align-items: center; justify-content: center; gap: 32px;
+  }
+  .label-item {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: #daa040;
+  }
+  .label-sep { color: #7a5418; }
+</style>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap"/>
+</head>
+<body>
+<div class="browser">
+  <div class="browser-bar">
+    <div class="dots">
+      <div class="dot r"></div>
+      <div class="dot y"></div>
+      <div class="dot g"></div>
+    </div>
+    <div class="address-bar">
+      <span class="lock">🔒</span>
+      <span>dribbble.com/shots/popular</span>
+    </div>
+    <div class="ext-icon">ᚲ</div>
+  </div>
+
+  <div class="webpage">
+    <div class="fake-nav">
+      <div class="fake-logo"></div>
+      <div class="fake-link"></div>
+      <div class="fake-link"></div>
+      <div class="fake-link"></div>
+    </div>
+    <div class="fake-hero">
+      <div class="fake-h1"></div>
+      <div class="fake-sub"></div>
+      <div class="fake-cta"></div>
+    </div>
+    <div class="fake-body">
+      <div class="fake-card"><div class="fake-card-h"></div><div class="fake-card-p"></div><div class="fake-card-p"></div><div class="fake-card-p" style="width:60%"></div></div>
+      <div class="fake-card"><div class="fake-card-h" style="width:65%"></div><div class="fake-card-p"></div><div class="fake-card-p"></div><div class="fake-card-p" style="width:75%"></div></div>
+      <div class="fake-card"><div class="fake-card-h" style="width:80%"></div><div class="fake-card-p"></div><div class="fake-card-p" style="width:70%"></div><div class="fake-card-p" style="width:55%"></div></div>
+    </div>
+
+    <!-- Popup overlay -->
+    <div class="popup-wrap">
+      <div class="popup">
+        <div class="popup-header">
+          <div class="popup-logo">ᚲ</div>
+          <span class="popup-title">KENNR</span>
+          <span class="popup-ver">v0.1</span>
+        </div>
+        <div class="popup-body">
+          <div class="overline">current tab</div>
+          <div class="current-tab">
+            <div class="tab-title">Dribbble — Popular Shots</div>
+            <div class="tab-url">dribbble.com/shots/popular</div>
+          </div>
+          <div class="input-wrap">
+            <div class="overline">backend URL</div>
+            <div class="fake-input">kristh-worker.justinaiark101.workers.dev</div>
+          </div>
+          <div class="btn-row">
+            <div class="btn btn-primary">⛓ capture outerHTML</div>
+            <div class="btn btn-accent">📷 capture screenshot</div>
+            <div class="btn btn-default">⚡ capture both</div>
+          </div>
+          <div class="status-ok">✓ DNA extracted — 47 tokens captured</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="label-strip">
+      <span class="label-item">Kennr</span>
+      <span class="label-sep">·</span>
+      <span class="label-item">Design DNA Extractor</span>
+      <span class="label-sep">·</span>
+      <span class="label-item">wyerd.org</span>
+    </div>
+  </div>
+</div>
+</body>
+</html>
