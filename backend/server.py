@@ -28,8 +28,7 @@ from collections import Counter, defaultdict, deque
 from time import time as _now
 from PIL import Image
 
-from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
-
+import anthropic
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -37,7 +36,11 @@ load_dotenv(ROOT_DIR / ".env")
 mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ["DB_NAME"]]
-EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+EMERGENT_LLM_KEY = ANTHROPIC_API_KEY  # legacy alias
+
+_anthropic = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
+CLAUDE_MODEL = "claude-sonnet-4-6"
 
 app = FastAPI(title="Emergent Extractor")
 api_router = APIRouter(prefix="/api")
@@ -414,37 +417,33 @@ Return this exact schema:
 """
 
 
-async def _llm_send_with_retry(chat: LlmChat, msg: UserMessage, attempts: int = 1) -> str:
-    """Send LLM message with error handling. Relies on litellm's internal retries.
-    attempts=1 keeps total time bounded under typical edge timeouts."""
+async def _llm_call(system: str, user_text: str, image_b64: Optional[str] = None, mime: str = "image/png") -> str:
+    if not _anthropic:
+        raise HTTPException(500, "ANTHROPIC_API_KEY not configured")
     try:
-        return await chat.send_message(msg)
+        content: list = []
+        if image_b64:
+            content.append({"type": "image", "source": {"type": "base64", "media_type": mime, "data": image_b64}})
+        content.append({"type": "text", "text": user_text})
+        resp = await _anthropic.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=4096,
+            system=system,
+            messages=[{"role": "user", "content": content}],
+        )
+        return resp.content[0].text
     except Exception as e:
         err = str(e)
         logger.warning("LLM call failed: %s", err)
-        if "Budget has been exceeded" in err or "budget" in err.lower():
-            raise HTTPException(
-                status_code=402,
-                detail="Emergent LLM Key budget exceeded. Please top up in Profile → Universal Key → Add Balance.",
-            )
         raise HTTPException(status_code=502, detail=f"Upstream LLM unavailable: {err[:200]}")
 
 
 async def analyze_screenshot(image_b64: str, label: Optional[str] = None) -> Dict[str, Any]:
-    if not EMERGENT_LLM_KEY:
-        raise HTTPException(500, "EMERGENT_LLM_KEY not configured")
-
-    chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
-        session_id=f"vision-{uuid.uuid4()}",
-        system_message=VISION_SYSTEM_PROMPT,
-    ).with_model("anthropic", "claude-sonnet-4-5-20250929")
-
-    msg = UserMessage(
-        text=f"Analyze this screenshot{(' (label: ' + label + ')') if label else ''}. Return ONLY the JSON object defined in the system prompt. No prose.",
-        file_contents=[ImageContent(image_base64=image_b64)],
+    raw = await _llm_call(
+        system=VISION_SYSTEM_PROMPT,
+        user_text=f"Analyze this screenshot{(' (label: ' + label + ')') if label else ''}. Return ONLY the JSON object defined in the system prompt. No prose.",
+        image_b64=image_b64,
     )
-    raw = await _llm_send_with_retry(chat, msg)
 
     # strip accidental fences
     s = raw.strip()
@@ -500,35 +499,23 @@ Return ONLY strict JSON (no prose/markdown) matching exactly:
 
 
 async def synthesize_dna(sources: List[Dict[str, Any]], project_name: str) -> Dict[str, Any]:
-    if not EMERGENT_LLM_KEY:
-        raise HTTPException(500, "EMERGENT_LLM_KEY not configured")
-
-    chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
-        session_id=f"dna-{uuid.uuid4()}",
-        system_message=DNA_SYSTEM_PROMPT,
-    ).with_model("anthropic", "claude-sonnet-4-5-20250929")
-
     payload = {"project_name": project_name, "sources": sources}
-    # truncate oversized payloads safely (per-source)
     payload_str = json.dumps(payload)
     if len(payload_str) > 60000:
         trimmed_sources = []
         for s in sources:
             data = s.get("data", {})
-            # keep small top-level only if large
             data_str = json.dumps(data)
             if len(data_str) > 12000:
-                # keep a condensed summary
                 data = {k: v for k, v in data.items() if isinstance(v, (str, int, float, bool)) or (isinstance(v, (list, dict)) and len(json.dumps(v)) < 4000)}
             trimmed_sources.append({"kind": s["kind"], "label": s.get("label"), "data": data})
         payload = {"project_name": project_name, "sources": trimmed_sources}
         payload_str = json.dumps(payload)
 
-    msg = UserMessage(
-        text="Synthesize design DNA from the following extractions. Return ONLY the JSON object.\n\n" + payload_str,
+    raw = await _llm_call(
+        system=DNA_SYSTEM_PROMPT,
+        user_text="Synthesize design DNA from the following extractions. Return ONLY the JSON object.\n\n" + payload_str,
     )
-    raw = await _llm_send_with_retry(chat, msg)
     s = raw.strip()
     if s.startswith("```"):
         s = re.sub(r"^```(?:json)?\s*", "", s)
@@ -883,20 +870,14 @@ async def dna_diff(payload: DnaDiffInput, request: Request):
     if not a or not b:
         raise HTTPException(404, "One or both DNA records not found")
 
-    chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
-        session_id=f"diff-{uuid.uuid4()}",
-        system_message=DIFF_SYSTEM_PROMPT,
-    ).with_model("anthropic", "claude-sonnet-4-5-20250929")
-
     body = {
         "dna_a": {"label": a.get("label"), "data": a["data"]},
         "dna_b": {"label": b.get("label"), "data": b["data"]},
     }
-    msg = UserMessage(
-        text="Compare these two DNA reports. Return ONLY the JSON object.\n\n" + json.dumps(body)[:60000],
+    raw = await _llm_call(
+        system=DIFF_SYSTEM_PROMPT,
+        user_text="Compare these two DNA reports. Return ONLY the JSON object.\n\n" + json.dumps(body)[:60000],
     )
-    raw = await _llm_send_with_retry(chat, msg)
     s = raw.strip()
     if s.startswith("```"):
         s = re.sub(r"^```(?:json)?\s*", "", s)

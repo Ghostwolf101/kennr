@@ -1,0 +1,13 @@
+<svg viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect width="128" height="128" fill="#080709" rx="6"/>
+  <!-- Outer gold border -->
+  <rect x="2.5" y="2.5" width="123" height="123" fill="none" stroke="#7a5418" stroke-width="1" rx="5"/>
+  <!-- Kenaz rune drawn as paths — stave + wedge pointing right -->
+  <!-- stave -->
+  <line x1="46" y1="18" x2="46" y2="110" stroke="#daa040" stroke-width="5" stroke-linecap="round"/>
+  <!-- upper arm: from stave at ~y=35 out to apex at (82,64) -->
+  <line x1="46" y1="35" x2="82" y2="64" stroke="#daa040" stroke-width="5" stroke-linecap="round"/>
+  <!-- lower arm: from apex back to stave at ~y=93 -->
+  <line x1="82" y1="64" x2="46" y2="93" stroke="#daa040" stroke-width="5" stroke-linecap="round"/>
+</svg>
