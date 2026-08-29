@@ -20,10 +20,12 @@ async function loadSettings() {
         "backendUrl",
         "projectName",
         "fullPage",
+        "adminToken",
     ]);
     if (stored.backendUrl) $("backend-url").value = stored.backendUrl;
     if (stored.projectName) $("project-name").value = stored.projectName;
     if (stored.fullPage !== undefined) $("full-page").checked = !!stored.fullPage;
+    if (stored.adminToken) $("admin-token").value = stored.adminToken;
 }
 
 async function saveSettings() {
@@ -31,7 +33,13 @@ async function saveSettings() {
         backendUrl: $("backend-url").value.trim(),
         projectName: $("project-name").value.trim(),
         fullPage: $("full-page").checked,
+        adminToken: $("admin-token").value.trim(),
     });
+}
+
+function authHeaders() {
+    const token = $("admin-token").value.trim();
+    return token ? { "x-admin-token": token } : {};
 }
 
 function apiBase() {
@@ -47,7 +55,7 @@ async function postJSON(path, body) {
     if (!base) throw new Error("Set backend URL first");
     const r = await fetch(`${base}/api${path}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify(body),
     });
     if (!r.ok) {
@@ -65,7 +73,7 @@ async function patchJSON(path, body) {
     const base = apiBase();
     const r = await fetch(`${base}/api${path}`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify(body),
     });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -77,7 +85,7 @@ async function ensureProject() {
     if (!name) return null;
     const base = apiBase();
     // list then find or create
-    const lr = await fetch(`${base}/api/projects`);
+    const lr = await fetch(`${base}/api/projects`, { headers: authHeaders() });
     const list = await lr.json();
     const existing = list.find(
         (p) => p.name.toLowerCase() === name.toLowerCase(),
