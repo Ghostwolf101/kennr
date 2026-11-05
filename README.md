@@ -1,4 +1,4 @@
-# Kristh — Design DNA Extractor
+# Kennr — Design DNA Extractor
 
 Extract structured design data from any website, React codebase, or screenshot. Outputs AI-consumable JSON — color palettes, typography systems, spacing, component patterns, visual identity — ready to feed into any AI agent or design pipeline.
 
@@ -19,38 +19,16 @@ Built for Wyerd Web. Distributable as a standalone tool.
 
 | Layer | Technology |
 |-------|------------|
-| Backend | FastAPI + MongoDB (Motor) + Playwright |
-| AI | Claude Sonnet via Anthropic API |
-| Frontend | React 19 + Tailwind CSS |
-| Chrome Extension | Manifest V3 — one-click capture from any tab |
+| Chrome Extension (this repo) | Manifest V3 — one-click capture from any tab |
+| Backend | [`kennr-worker`](https://github.com/Ghostwolf101/kennr-worker) (private): a Cloudflare Worker with D1 storage and Workers AI |
 
 ---
 
 ## Quick start
 
-### Backend
-
-```bash
-cd backend
-cp .env.example .env        # fill in MONGO_URL, ANTHROPIC_API_KEY, DB_NAME
-pip install -r requirements.txt
-playwright install chromium
-uvicorn server:app --reload --port 8001
-```
-
-### Frontend
-
-```bash
-cd frontend
-npm install
-npm start                   # runs on :3000, proxies API to :8001
-```
-
-### Chrome extension
-
 1. Open `chrome://extensions` → Enable Developer Mode
 2. Load unpacked → select `chrome-extension/`
-3. Set the backend URL to `http://localhost:8001` in extension options
+3. Set the backend URL to your kennr-worker URL (e.g. `https://your-kennr-backend.workers.dev`) in the extension
 
 ---
 
@@ -89,21 +67,9 @@ npm start                   # runs on :3000, proxies API to :8001
 
 ---
 
-## Environment variables
+## History
 
-```env
-MONGO_URL=mongodb://localhost:27017
-DB_NAME=kristh
-ANTHROPIC_API_KEY=sk-ant-...
-```
-
----
-
-## Cloudflare Worker variant
-
-`kristh-worker` is a zero-dependency Cloudflare Worker port — same API surface, D1 instead of MongoDB, Workers AI instead of Anthropic API. Deploys globally with no infrastructure to manage.
-
-See `../kristh-worker/` for source and `wrangler.toml` for bindings.
+Kennr started as a FastAPI + MongoDB + React app built on Emergent (then named Kristh). That app and its Emergent deployment were retired on 2026-11-04 in favor of the Cloudflare Worker. The old code is kept, unchanged, at the git tag [`emergent-app-archive`](https://github.com/Ghostwolf101/kennr/tree/emergent-app-archive).
 
 ---
 

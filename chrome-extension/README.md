@@ -1,6 +1,6 @@
-# Emergent Extractor — Chrome Extension
+# Kennr — Chrome Extension
 
-One-click capture of any browser tab → send to your Emergent Extractor backend → get AI-readable design DNA.
+One-click capture of any browser tab → send to your Kennr backend (kennr-worker) → get AI-readable design DNA.
 
 ## What it does
 - **Capture outerHTML** — grabs the fully-rendered DOM (post-JS) and POSTs to `/api/extract/html`
@@ -20,7 +20,7 @@ One-click capture of any browser tab → send to your Emergent Extractor backend
 
 On first click:
 
-- **Backend URL**: paste your Emergent Extractor URL (e.g. `https://your-app.preview.emergentagent.com`) — no trailing slash
+- **Backend URL**: paste your kennr-worker URL (e.g. `https://your-kennr-backend.workers.dev`) — no trailing slash
 - **Project name**: optional, groups captures. Same name reuses the existing project.
 - **Full-page screenshot**: ON = server-side Playwright (renders full scroll). OFF = visible viewport only (faster, no server spawn).
 
